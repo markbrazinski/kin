@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useReducer, useRef, useCallback, useMemo } from 'react';
 import {
   IconMic, IconLock, IconLanguages, IconInfo, IconSparkle, IconCheck, IconShield,
-  IconArrowRight, IconPlay, IconAlert, IconRotate, IconLink,
+  IconArrowRight, IconPlay, IconAlert, IconRotate, IconLink, IconX,
 } from './components/icons';
 import { Chip, Button, Waveform, CompletenessMeter } from './components/primitives';
 import { RecordCard } from './components/RecordCard';
@@ -254,13 +254,24 @@ function ShortcutHint({ isMac }) {
 }
 
 // ---------- Demo control dock -------------------------------------------
-function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, phase, view, disabled }) {
+function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onClose, phase, view }) {
   if (!visible) return null;
   return (
     <div className="fixed bottom-3 left-3 z-30 bg-card border border-line rounded-kin-lg shadow-elevated px-3 py-2.5 w-[min(440px,calc(100%-24px))]">
       <div className="flex items-center justify-between mb-2">
         <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Demo controls</div>
-        <div className="text-[11px] text-muted font-mono">⌘.&nbsp;to hide</div>
+        <div className="flex items-center gap-2">
+          <div className="text-[11px] text-muted font-mono">⌘.&nbsp;to hide</div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Hide demo controls"
+            title="Hide demo controls"
+            className="w-6 h-6 rounded-kin text-muted hover:text-ink hover:bg-subtle transition-colors flex items-center justify-center"
+          >
+            <IconX size={14} />
+          </button>
+        </div>
       </div>
       <div className="flex flex-wrap gap-1.5">
         <Button size="sm" variant="primary" icon={<IconPlay size={14} />}
@@ -281,6 +292,24 @@ function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, phase, view, d
         </Button>
       </div>
     </div>
+  );
+}
+
+// ---------- Demo reopen pill --------------------------------------------
+// Rendered when the dock is hidden. Bottom-left, same corner the dock lived in,
+// so the eye finds it without scanning. Click restores the dock; ⌘. still
+// toggles for users whose browser doesn't intercept Cmd+Period.
+function DemoReopenPill({ onOpen }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label="Show demo controls"
+      className="fixed bottom-3 left-3 z-30 flex items-center gap-1.5 bg-card border border-line rounded-kin shadow-elevated px-3 h-9 text-[13px] font-medium text-ink hover:bg-subtle transition-colors"
+    >
+      <IconPlay size={14} />
+      Demo
+    </button>
   );
 }
 
@@ -320,11 +349,16 @@ function App() {
   useEffect(() => {
     const onKey = (e) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (mod && (e.key === "d" || e.key === "D")) {
+      if (!mod) return;
+      if (e.key === "d" || e.key === "D") {
         e.preventDefault();
         setDevMode(v => !v);
+        return;
       }
-      if (mod && e.key === ".") {
+      // Accept both `e.key === "."` (US layout) and `e.code === "Period"`
+      // (layouts where the modifier changes e.key). Browser's Cmd+. "Stop"
+      // default is suppressed by preventDefault.
+      if (e.key === "." || e.code === "Period") {
         e.preventDefault();
         setDemoDockVisible(v => !v);
       }
@@ -416,10 +450,10 @@ function App() {
     setView("match");
     setMatchPhase("split");
     const t0 = performance.now();
-    logCall({ name: "fuzzy_match", args: { a: "Mohammed Al-Saleh", b: "Mohamad Alsaleh" }, result: "candidate" }, 0);
+    logCall({ name: "fuzzy_match", args: { a: "Omar Al-Saleh", b: "Umar Alsaleh" }, result: "candidate" }, 0);
     setTimeout(() => {
       logCall({ name: "transliteration_comparison",
-                args: { source: "محمد الصالح", variants: ["Mohammed", "Mohamad"] },
+                args: { source: "عمر الصالح", variants: ["Omar", "Umar"] },
                 result: "match_confidence=high",
                 highlight: true }, performance.now() - t0);
       setMatchPhase("linking");
@@ -541,9 +575,13 @@ function App() {
         onReset={onReset}
         onMatch={onSimulateMatch}
         onCrisis={onSimulateCrisis}
+        onClose={() => setDemoDockVisible(false)}
         phase={phase}
         view={view}
       />
+      {!demoDockVisible && (
+        <DemoReopenPill onOpen={() => setDemoDockVisible(true)} />
+      )}
 
       <ShortcutHint isMac={isMac} />
     </div>

@@ -1,11 +1,73 @@
 /* Record card: biographic, last-seen, distinguishing marks, plus optional Guardian & Protection
    sub-section that auto-expands when a minor is detected. */
 import React from 'react';
-import { IconCamera, IconShield, IconAlert, IconInfo, IconUser, IconMapPin, IconSparkle, IconLock } from './icons';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import { IconCamera, IconShield, IconAlert, IconInfo, IconUser, IconMapPin, IconSparkle, IconLock, IconPause } from './icons';
 import { SectionHeader, Chip, Field } from './primitives';
 
-function TransliterationVariants({ variants }) {
-  // variants: array like [{ latin: "Mohammed", script: "محمد", rtl: true }]
+export type NameVariant = {
+  latin: string;
+  script?: string;
+  rtl?: boolean;
+};
+
+export type GuardianData = {
+  guardianPresent?: string;
+  cpConsent?: string;
+  cmKnown?: string;
+  referralStatus?: string;
+};
+
+export type RecordData = {
+  name: string;
+  nameVariants: NameVariant[] | null;
+  nameNative: string | null;
+  nameNativeRtl: boolean;
+  age: string;
+  relationship: string;
+  language: string;
+  lastSeenLocation: string;
+  lastSeenLocationSource: string;
+  lastSeenLocationRtl: boolean;
+  lastSeenDate: string;
+  circumstance: string;
+  physicalDesc: string;
+  features: string;
+  guardian: GuardianData;
+};
+
+export type RecordCardProps = {
+  record: RecordData;
+  minor: boolean | undefined;
+  justPopulatedKey: string | null;
+  disabled?: boolean;
+};
+
+type ExpandedMap = Record<string, boolean>;
+
+type TransliterationVariantsProps = {
+  variants: NameVariant[] | null | undefined;
+};
+
+type SubSectionProps = {
+  id: string;
+  title: ReactNode;
+  icon?: ReactNode;
+  meta?: ReactNode;
+  children: ReactNode;
+  expandedMap: ExpandedMap;
+  setExpandedMap: Dispatch<SetStateAction<ExpandedMap>>;
+  highlight?: boolean;
+};
+
+type GuardianProtectionProps = {
+  data: GuardianData;
+  minor: boolean | undefined;
+  expandedMap: ExpandedMap;
+  setExpandedMap: Dispatch<SetStateAction<ExpandedMap>>;
+};
+
+function TransliterationVariants({ variants }: TransliterationVariantsProps) {
   if (!variants || !variants.length) return null;
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -39,7 +101,7 @@ function PhotoPlaceholder() {
   );
 }
 
-function SubSection({ id, title, icon, meta, children, expandedMap, setExpandedMap, highlight }) {
+function SubSection({ id, title, icon, meta, children, expandedMap, setExpandedMap, highlight }: SubSectionProps) {
   const expanded = expandedMap[id] !== false;
   const toggle = () => setExpandedMap(m => ({ ...m, [id]: !expanded }));
   return (
@@ -52,7 +114,7 @@ function SubSection({ id, title, icon, meta, children, expandedMap, setExpandedM
   );
 }
 
-function GuardianProtection({ data, minor, expandedMap, setExpandedMap }) {
+function GuardianProtection({ data, minor, expandedMap, setExpandedMap }: GuardianProtectionProps) {
   if (!minor) return null;
   return (
     <SubSection
@@ -78,14 +140,24 @@ function GuardianProtection({ data, minor, expandedMap, setExpandedMap }) {
   );
 }
 
-function RecordCard({ record, minor, justPopulatedKey, disabled }) {
-  const [expandedMap, setExpandedMap] = React.useState({});
+function RecordCard({ record, minor, justPopulatedKey, disabled }: RecordCardProps) {
+  const [expandedMap, setExpandedMap] = React.useState<ExpandedMap>({});
 
   return (
     <div
-      className={`relative bg-card border border-line rounded-kin-lg transition-opacity duration-200 ${disabled ? "opacity-50 pointer-events-none" : ""}`}
+      className={`relative bg-card rounded-kin-lg border transition-colors duration-200 ${disabled ? "border-hair" : "border-line"}`}
       aria-disabled={disabled || undefined}
     >
+      {disabled && (
+        <div
+          className="flex items-center gap-2 px-5 py-2 border-b border-hair bg-amber-soft/50 rounded-t-kin-lg text-muted"
+          role="status"
+        >
+          <IconPause size={14} />
+          <span className="text-[13px] font-medium">Paused — respond to crisis referral</span>
+        </div>
+      )}
+      <div className={disabled ? "pointer-events-none select-none" : ""}>
       <div className="px-6 pt-5 pb-1 flex items-center justify-between">
         <div>
           <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Record</div>
@@ -166,6 +238,7 @@ function RecordCard({ record, minor, justPopulatedKey, disabled }) {
           </div>
           <PhotoPlaceholder />
         </SubSection>
+      </div>
       </div>
     </div>
   );

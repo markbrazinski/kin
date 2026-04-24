@@ -92,7 +92,7 @@ function CrisisReferralCard({ lang, onResolved, onDeEscalated }) {
 }
 
 // --- Transliteration match view ------------------------------------------
-function MiniRecord({ title, tone, name, script, age, lastSeen, circumstance }) {
+function MiniRecord({ title, tone, reporter, missingName, missingScript, age, lastSeen, circumstance }) {
   const toneBg = tone === "warm" ? "bg-[oklch(0.985_0.012_75)]" : "bg-[oklch(0.985_0.006_220)]";
   return (
     <div className={`flex-1 border border-line rounded-kin-lg ${toneBg}`}>
@@ -101,11 +101,15 @@ function MiniRecord({ title, tone, name, script, age, lastSeen, circumstance }) 
         <Chip icon={<IconLock size={12} />} tone="neutral" className="!bg-white">Local only</Chip>
       </div>
       <div className="px-5 py-4">
-        <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Name</div>
+        <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Reporter</div>
+        <div className="text-[15px] text-ink mt-0.5">{reporter}</div>
+
+        <div className="mt-4 text-[12px] font-medium uppercase tracking-wider text-muted">Missing child</div>
         <div className="mt-1 flex items-baseline gap-3">
-          <div className="text-[20px] font-semibold text-ink">{name}</div>
-          <div className="rtl text-[20px] text-ink/80">{script}</div>
+          <div className="text-[20px] font-semibold text-ink">{missingName}</div>
+          <div className="rtl text-[20px] text-ink/80">{missingScript}</div>
         </div>
+
         <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3">
           <div>
             <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Age</div>
@@ -146,39 +150,48 @@ function TransliterationMatch({ phase, onBack }) {
         <MiniRecord
           title="Intake A · Session #089"
           tone="warm"
-          name="Mohammed Al-Saleh"
-          script="محمد الصالح"
-          age="34 (self)"
-          lastSeen="Border crossing, Jordan"
-          circumstance="Separated from spouse and son during transit"
+          reporter="Layla Al-Saleh · Mother"
+          missingName="Omar Al-Saleh"
+          missingScript="عمر الصالح"
+          age="9"
+          lastSeen="Ar-Raqqa outskirts · ~6 days ago"
+          circumstance="Separated during crowd surge leaving the neighbourhood"
         />
         <MiniRecord
           title="Intake B · Session #147"
           tone="cool"
-          name="Mohamad Alsaleh"
-          script="محمد الصالح"
-          age="searching for brother"
-          lastSeen="Zaatari reception area"
-          circumstance="Looking for sibling last seen at border"
+          reporter="Yousef Al-Saleh · Father"
+          missingName="Umar Alsaleh"
+          missingScript="عمر الصالح"
+          age="9"
+          lastSeen="Ar-Raqqa outskirts · ~6 days ago"
+          circumstance="Lost sight of him near the transit checkpoint"
         />
       </div>
 
-      {/* Animated link / arrow */}
-      <div className="relative h-20 my-2">
+      {/* Animated Y-shape connector: two streams from the intake panel
+          bottoms converging to the top edge of the Match Confirmed card. */}
+      <div className="relative h-20 mt-2 mb-0">
         {showLink && (
           <svg viewBox="0 0 400 80" className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
             <path
-              d="M 80 10 C 120 60, 280 60, 320 10"
+              d="M 80 0 C 80 40, 200 40, 200 80"
               fill="none"
               stroke="oklch(0.55 0.11 155)"
               strokeWidth="1.5"
-              strokeDasharray="4 4"
+              strokeLinecap="round"
+              pathLength={60}
               className="kin-link-draw"
             />
-            <circle cx="200" cy="40" r="14" fill="oklch(0.96 0.03 155)" stroke="oklch(0.55 0.11 155)" strokeWidth="1" />
-            <g transform="translate(192,32)">
-              <path d="M3 4 L7 8 L13 2" fill="none" stroke="oklch(0.55 0.11 155)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-            </g>
+            <path
+              d="M 320 0 C 320 40, 200 40, 200 80"
+              fill="none"
+              stroke="oklch(0.55 0.11 155)"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              pathLength={60}
+              className="kin-link-draw"
+            />
           </svg>
         )}
       </div>
@@ -197,33 +210,33 @@ function TransliterationMatch({ phase, onBack }) {
             <div className="ml-auto"><Chip icon={<IconCheck size={12} />} tone="green">Pending caseworker review</Chip></div>
           </div>
           <div className="px-6 py-5">
-            <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Unified identity</div>
+            <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Unified identity · missing child</div>
             <div className="mt-2 flex flex-wrap items-baseline gap-x-6 gap-y-1">
-              <div className="rtl text-[28px] font-semibold text-ink">محمد الصالح</div>
-              <div className="text-[22px] text-ink">Mohammed Al-Saleh</div>
-              <div className="text-[16px] text-muted">· also: Mohamad Alsaleh</div>
+              <div className="rtl text-[28px] font-semibold text-ink">عمر الصالح</div>
+              <div className="text-[22px] text-ink">Omar Al-Saleh</div>
+              <div className="text-[16px] text-muted">· also: Umar Alsaleh</div>
             </div>
 
             <div className="mt-5 grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-4">
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Source script</div>
-                <div className="rtl text-[17px] text-ink mt-0.5">محمد الصالح</div>
+                <div className="rtl text-[17px] text-ink mt-0.5">عمر الصالح</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Phonetic variants</div>
-                <div className="text-[15px] text-ink mt-0.5">Mohammed · Mohamad</div>
+                <div className="text-[15px] text-ink mt-0.5">Omar · Umar</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Age</div>
+                <div className="text-[15px] text-ink mt-0.5">9</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Linked sessions</div>
-                <div className="text-[15px] text-ink mt-0.5">#089 · #147</div>
-              </div>
-              <div>
-                <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Relationship signal</div>
-                <div className="text-[15px] text-ink mt-0.5">Sibling (self-identified ↔ searched)</div>
+                <div className="text-[15px] text-ink mt-0.5">#089 (Mother) · #147 (Father)</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Last-seen overlap</div>
-                <div className="text-[15px] text-ink mt-0.5">Jordan border corridor</div>
+                <div className="text-[15px] text-ink mt-0.5">Ar-Raqqa outskirts · ~6 days ago</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Next step</div>

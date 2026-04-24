@@ -1,51 +1,70 @@
 /* Small primitives inspired by shadcn's composition style, re-implemented with Tailwind only.
    Kept tiny and field-tool-flavored: borders over shadows, high contrast, no opacity-as-state. */
-import React from 'react';
+import React, { forwardRef } from 'react';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { IconChevron, IconInfo } from './icons';
+
+export type ChipTone = 'neutral' | 'primary' | 'amber' | 'red' | 'green';
+export type WaveformState = 'idle' | 'recording' | 'processing' | 'playback';
 
 // --- Button ------------------------------------------------------------
 // Disabled is communicated structurally (border + text) + an icon when meaningful,
 // NEVER through opacity alone. Principle 1.
-const Button = React.forwardRef(({ variant = "primary", size = "md", icon, className = "", children, disabled, ...rest }, ref) => {
-  const base = "inline-flex items-center justify-center gap-2 font-medium rounded-kin transition-colors duration-150 select-none";
-  const sizes = {
-    sm: "text-[14px] px-3 h-9",
-    md: "text-[15px] px-4 h-10",
-    lg: "text-[16px] px-5 h-12",
-  };
-  const variants = {
-    primary: disabled
-      ? "bg-white border border-line text-muted cursor-not-allowed"
-      : "bg-primary text-white border border-primary hover:bg-primary-2",
-    secondary: disabled
-      ? "bg-white border border-line text-muted cursor-not-allowed"
-      : "bg-white border border-line text-ink hover:bg-subtle",
-    ghost: disabled
-      ? "text-muted cursor-not-allowed"
-      : "text-ink hover:bg-subtle",
-    danger: disabled
-      ? "bg-white border border-line text-muted cursor-not-allowed"
-      : "bg-white border border-red text-red hover:bg-red-soft",
-    confirm: disabled
-      ? "bg-white border border-line text-muted cursor-not-allowed"
-      : "bg-green text-white border border-green hover:brightness-95",
-  };
-  return (
-    <button
-      ref={ref}
-      disabled={disabled}
-      className={`${base} ${sizes[size]} ${variants[variant]} ${className}`}
-      {...rest}
-    >
-      {icon}
-      {children}
-    </button>
-  );
-});
+export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'confirm';
+  size?: 'sm' | 'md' | 'lg';
+  icon?: ReactNode;
+};
+
+const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ variant = "primary", size = "md", icon, className = "", children, disabled, ...rest }, ref) => {
+    const base = "inline-flex items-center justify-center gap-2 font-medium rounded-kin transition-colors duration-150 select-none";
+    const sizes = {
+      sm: "text-[14px] px-3 h-9",
+      md: "text-[15px] px-4 h-10",
+      lg: "text-[16px] px-5 h-12",
+    };
+    const variants = {
+      primary: disabled
+        ? "bg-white border border-line text-muted cursor-not-allowed"
+        : "bg-primary text-white border border-primary hover:bg-primary-2",
+      secondary: disabled
+        ? "bg-white border border-line text-muted cursor-not-allowed"
+        : "bg-white border border-line text-ink hover:bg-subtle",
+      ghost: disabled
+        ? "text-muted cursor-not-allowed"
+        : "text-ink hover:bg-subtle",
+      danger: disabled
+        ? "bg-white border border-line text-muted cursor-not-allowed"
+        : "bg-white border border-red text-red hover:bg-red-soft",
+      confirm: disabled
+        ? "bg-white border border-line text-muted cursor-not-allowed"
+        : "bg-green text-white border border-green hover:brightness-95",
+    };
+    return (
+      <button
+        ref={ref}
+        disabled={disabled}
+        className={`${base} ${sizes[size]} ${variants[variant]} ${className}`}
+        {...rest}
+      >
+        {icon}
+        {children}
+      </button>
+    );
+  }
+);
 
 // --- Chip / Badge (icon + text + color, never color alone) --------------
-const Chip = ({ icon, children, tone = "neutral", className = "" }) => {
-  const tones = {
+export type ChipProps = {
+  icon?: ReactNode;
+  children?: ReactNode;
+  tone?: ChipTone;
+  className?: string;
+};
+
+const Chip = ({ icon, children, tone = "neutral", className = "" }: ChipProps) => {
+  const tones: Record<ChipTone, string> = {
     neutral: "bg-subtle border-line text-ink",
     primary: "bg-primary-soft border-primary/20 text-primary",
     amber:   "bg-amber-soft border-amber/40 text-[oklch(0.42_0.12_75)]",
@@ -61,7 +80,15 @@ const Chip = ({ icon, children, tone = "neutral", className = "" }) => {
 };
 
 // --- Section separator header -------------------------------------------
-const SectionHeader = ({ title, icon, meta, expanded = true, onToggle }) => (
+export type SectionHeaderProps = {
+  title: ReactNode;
+  icon?: ReactNode;
+  meta?: ReactNode;
+  expanded?: boolean;
+  onToggle?: () => void;
+};
+
+const SectionHeader = ({ title, icon, meta, expanded = true, onToggle }: SectionHeaderProps) => (
   <div className="flex items-center justify-between py-3">
     <button
       type="button"
@@ -82,7 +109,16 @@ const SectionHeader = ({ title, icon, meta, expanded = true, onToggle }) => (
 
 // --- Field row (label above value, 18px value, "—" empty state) ---------
 // Principle 10: no confidence %. If a value is awaiting verification, show a "verify" chip.
-const Field = ({ label, value, extra, verify, justPopulated, subValue }) => {
+export type FieldProps = {
+  label: ReactNode;
+  value?: ReactNode;
+  extra?: ReactNode;
+  verify?: boolean;
+  justPopulated?: boolean;
+  subValue?: ReactNode;
+};
+
+const Field = ({ label, value, extra, verify, justPopulated, subValue }: FieldProps) => {
   return (
     <div className={`py-2.5 px-0 -mx-0 rounded-kin ${justPopulated ? "kin-populate" : ""}`}>
       <div className="flex items-center justify-between">
@@ -106,8 +142,17 @@ const Field = ({ label, value, extra, verify, justPopulated, subValue }) => {
 
 // --- Completeness meter (segmented, not a percentage number) ------------
 // Principle 10 adjacent: avoid numeric progress. Show structure instead.
-const CompletenessMeter = ({ segments }) => {
-  // segments: [{key,label,filled:boolean}]
+export type CompletenessSegment = {
+  key: string;
+  label: ReactNode;
+  filled: boolean;
+};
+
+export type CompletenessMeterProps = {
+  segments: CompletenessSegment[];
+};
+
+const CompletenessMeter = ({ segments }: CompletenessMeterProps) => {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -127,10 +172,15 @@ const CompletenessMeter = ({ segments }) => {
 };
 
 // --- Waveform (animated bars) --------------------------------------------
-const Waveform = ({ state = "idle" /* idle | recording | processing | playback */, bars = 32 }) => {
+export type WaveformProps = {
+  state?: WaveformState;
+  bars?: number;
+};
+
+const Waveform = ({ state = "idle", bars = 32 }: WaveformProps) => {
   // deterministic heights so SSR-friendly
-  const heights = React.useMemo(() => {
-    const out = [];
+  const heights = React.useMemo<number[]>(() => {
+    const out: number[] = [];
     for (let i = 0; i < bars; i++) {
       // quasi-random but stable
       const v = 0.3 + 0.7 * Math.abs(Math.sin(i * 1.37 + 2.1));
@@ -164,7 +214,11 @@ const Waveform = ({ state = "idle" /* idle | recording | processing | playback *
 };
 
 // --- Divider ------------------------------------------------------------
-const Divider = ({ className = "" }) => (
+export type DividerProps = {
+  className?: string;
+};
+
+const Divider = ({ className = "" }: DividerProps) => (
   <div className={`border-t border-hair ${className}`} />
 );
 

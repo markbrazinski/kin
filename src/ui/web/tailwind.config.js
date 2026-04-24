@@ -12,7 +12,7 @@ export default {
         card:    '#ffffff',
         hair:    'oklch(0.92 0.006 85)',
         line:    'oklch(0.88 0.008 85)',
-        muted:   'oklch(0.55 0.01 240)',
+        muted:   'oklch(0.48 0.01 240)',
         ink:     'oklch(0.22 0.01 240)',
         subtle:  'oklch(0.97 0.004 85)',
         primary:       'oklch(0.48 0.07 200)',
