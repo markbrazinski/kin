@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+audio_samples/
+results/phase_2_5_final/
+results/preprocessed_*/
+.DS_Store
+*.log
