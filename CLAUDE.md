@@ -296,6 +296,23 @@ CLAUDE.md and should flag the violation, not proceed.
 - ❌ **FastAPI binding beyond 127.0.0.1.** Never 0.0.0.0.
 - ❌ **Business logic in `src/ui/server.py` or `src/ui/web/`.** Layer
   violation — all decisions come from Core.
+- ❌ **React Clock Provider or useClock() hook.** Symmetry with the
+  Python Clock port is the wrong instinct — vi.useFakeTimers is
+  native Vitest and requires zero production code. See Phase 5A §5
+  pushback.
+- ❌ **Pre-commit running full test suite.** The tiered setup is
+  non-negotiable. A slow pre-commit hook gets bypassed with
+  --no-verify within 48 hours and stops mattering. Fast tier
+  (Core + Integration without coverage) on pre-commit; full tier
+  on pre-push.
+- ❌ **Early fixture capture (before Day 5).** Prompts are still
+  moving. Fixtures captured on Day 1 will be stale by Day 4 and
+  the staleness check becomes a nuisance rather than a guard.
+- ❌ **Automatic git push.** Never push without explicit user
+  instruction. Do not write helper scripts that push. Do not
+  suggest "let me push this so it's safe" — commits are the
+  durability mechanism, push is the visibility mechanism, and
+  visibility is the user's decision.
 
 ---
 
@@ -336,25 +353,68 @@ and the populations they serve.
 ---
 
 ## Testing requirements
-- **Target: 100+ tests** by feature freeze (Day 18, ~May 10).
-- **Zero network calls in test suite.** All Ollama adapters mocked.
-- **Core layer: 90%+ coverage.** Pure functions, no excuse.
-- **Integration layer:** test every adapter's error handling path
-  (timeout, malformed JSON, storage write fail, GGML crash retry,
-  runaway-loop timeout fire).
-- **FastAPI routes:** unit-tested with `TestClient`, Ollama adapter
-  mocked. ~15 tests.
-- **React components:** interaction tests for state-change components
-  (border transitions, completeness meter, function-call panel
-  updates). ~15 tests.
-- **E2E:** one Playwright test walking the Spanish-fill happy path
-  against a mocked adapter.
-- **Fixture-based LLM output testing:** 20+ real Gemma 4 E2B
-  responses captured during recon → frozen as test fixtures →
-  run through validators to catch regressions.
-- **Red-team suite (minimum 10 cases):** prompts designed to make
-  KIN hallucinate fields, assert fatal outcomes, or skip safety
-  escalation. ALL must fail gracefully.
+
+Test strategy is documented in full at `docs/test_strategy.md` (from
+Phase 5A Opus pass, April 23). Summary targets below.
+
+### Acceptance is invariant-based, not count-based
+Target shape at feature freeze (Day 18):
+- ~35 Core tests (95% coverage target — pure functions, no excuse)
+- ~25 Integration tests (every adapter error branch has a dedicated
+  test against a stub Ollama client)
+- ~10 FastAPI/SSE tests (routes + SSE event types + 127.0.0.1 bind
+  assertion)
+- ~18 React component tests (state transitions, not pixels; Vitest
+  + RTL + vi.useFakeTimers)
+- 1 Playwright E2E (Spanish-fill happy path against mocked adapter)
+- 10 red-team cases (see `docs/test_strategy.md` §4)
+
+Total ~99 tests. This is the shape, not a quota. If invariants hold
+with fewer, that's fine; if they need more, that's also fine.
+
+### The invariants that must hold
+1. Crisis detection blocks RFL tool calls across all 4 languages
+   (keyword + semantic paths)
+2. Age < 18 forces Guardian schema and routes to child-protection
+3. ollama_adapter enforces 25s hard timeout via FakeClock
+4. Every structured output validated against Pydantic before trusted
+5. No fatal assertions about missing persons, in any language
+6. No fabrication of fields the speaker didn't state
+7. Prompt injection refused and logged
+8. Zero network calls in any test (conftest monkeypatches
+   `socket.socket` to raise)
+9. Fixture prompt hashes match source; staleness fails CI loudly
+10. Ollama model tag asserted as `gemma4:e2b` in CI
+
+### The 3 tests to write FIRST (Day 1 of test phase)
+1. `tests/core/test_safety_rules.py::test_crisis_blocks_rfl` —
+   parametrized over 4 languages × (keyword + semantic)
+2. `tests/core/test_rfl_schema.py::test_minor_forces_guardian`
+3. `tests/integration/test_ollama_adapter_timeout.py::test_timeout_fires_at_25s`
+
+### Tiered commands
+- **Pre-commit** (fast, <10s): ruff + mypy Core/Integration +
+  `pytest tests/core tests/integration -q -x --no-cov`
+- **Pre-push** (full, <30s): `pytest -q` including red-team
+- **On demand:** `pnpm vitest --run`, `pnpm exec playwright test`
+
+### Fixtures (captured Day 5-7 when prompts stabilize, NOT Day 1)
+- 20+ real Gemma 4 E2B responses in `tests/fixtures/gemma/`
+- Content-addressed: every fixture binds to a prompt SHA
+- `conftest.py` fails the session if any fixture's prompt has
+  drifted from capture-time
+- Capture session is a ~4-hour block, not incremental
+
+### Clock port (see `docs/test_strategy.md` §5 for full code)
+- **Python:** `src/core/clock.py` defines the Protocol. Real adapter
+  `src/integration/system_clock.py` wraps `time.monotonic` +
+  `asyncio.sleep`. `tests/fakes/fake_clock.py` is a heapq-based
+  deterministic fake. Adapters receive the clock via constructor
+  injection. DO NOT add a React Clock Provider — use
+  `vi.useFakeTimers()`.
+- **React:** `vi.useFakeTimers()` at test time. Zero production
+  changes, zero DI ceremony. Hexagonal purity is a Python-side
+  concern.
 
 ## Safety posture (non-negotiable, pre-empts Dr. Megan Jones Bell)
 1. KIN's system prompt explicitly forbids asserting that a missing
@@ -430,7 +490,9 @@ kin/
       inset, function-call trace, completeness meter, colored state
       borders, transliteration match split panel).
 - [ ] Claude Code + Ollama Anthropic-compat caseworker review works.
-- [ ] 100+ tests passing, zero network calls in test suite.
+- [ ] All 10 invariants from test_strategy.md §2 hold. Full test
+      suite (~99 tests) green. Zero network calls (conftest socket
+      monkeypatch in place). Ollama model tag CI assertion present.
 - [ ] Safety section in writeup addresses Dr. Megan Jones Bell's four
       concerns explicitly.
 - [ ] Video at 2:20 ± 15s; opens with human stakes; all 4
@@ -452,9 +514,18 @@ kin/
 - Commit message format: `phase-N: <what>` e.g. `phase-4: ollama adapter`.
 
 ## Git & version control conventions
-- Don't save to git unless prompted.
+- Local-only git during build. Commit freely during work sessions.
 - Local identity: `mark@brazinski.us` / `Mark Brazinski` (local config,
   not global).
+- **Push only when the user explicitly says "push it" (or equivalent).**
+  Never push on your own initiative, never push at the end of a session,
+  never push "to be safe." The user controls when work becomes visible
+  on the remote.
+- If the user asks to push and there are commits to push, run
+  `git push` plainly. No timestamp rewriting, no force-push, no
+  history rewriting unless explicitly requested.
+- A session running at 14:00 that has code to share should stop at
+  `git commit`. Not `git push`.
 
 ---
 
