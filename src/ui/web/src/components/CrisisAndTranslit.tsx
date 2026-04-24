@@ -1,10 +1,46 @@
 /* Crisis referral card + Transliteration-match view. */
 import React from 'react';
+import type { ReactNode } from 'react';
 import { IconAlert, IconPause, IconPlay, IconInfo, IconLock, IconArrowRight, IconLink, IconCheck } from './icons';
 import { Button, Chip, Waveform } from './primitives';
 
+export type Language = 'en' | 'es' | 'ar' | 'fa';
+export type MatchPhase = 'split' | 'linking' | 'merged';
+
+type CrisisCopyEntry = {
+  dir: 'ltr' | 'rtl';
+  title: string;
+  body: string;
+  hotline: string;
+  play: string;
+};
+
+export type CrisisReferralCardProps = {
+  lang: Language;
+  onResolved: () => void;
+  onDeEscalated: () => void;
+};
+
+type MiniRecordTone = 'warm' | 'cool';
+
+type MiniRecordProps = {
+  title: ReactNode;
+  tone: MiniRecordTone;
+  reporter: ReactNode;
+  missingName: ReactNode;
+  missingScript: ReactNode;
+  age: ReactNode;
+  lastSeen: ReactNode;
+  circumstance: ReactNode;
+};
+
+export type TransliterationMatchProps = {
+  phase: MatchPhase;
+  onBack: () => void;
+};
+
 // Localized crisis copy. English stays as reference; the other three are the displaced-person UI.
-const CRISIS_COPY = {
+const CRISIS_COPY: Record<Language, CrisisCopyEntry> = {
   en: { dir: "ltr", title: "Help is available",
         body: "You are safe here. Trained support is available right now, in your language. Would you like to listen to a short message?",
         hotline: "IFRC Regional Support Line",
@@ -23,7 +59,7 @@ const CRISIS_COPY = {
         play: "پخش به فارسی" },
 };
 
-function CrisisReferralCard({ lang, onResolved, onDeEscalated }) {
+function CrisisReferralCard({ lang, onResolved, onDeEscalated }: CrisisReferralCardProps) {
   const copy = CRISIS_COPY[lang] || CRISIS_COPY.en;
   const [playing, setPlaying] = React.useState(false);
   const rtl = copy.dir === "rtl";
@@ -92,7 +128,7 @@ function CrisisReferralCard({ lang, onResolved, onDeEscalated }) {
 }
 
 // --- Transliteration match view ------------------------------------------
-function MiniRecord({ title, tone, reporter, missingName, missingScript, age, lastSeen, circumstance }) {
+function MiniRecord({ title, tone, reporter, missingName, missingScript, age, lastSeen, circumstance }: MiniRecordProps) {
   const toneBg = tone === "warm" ? "bg-[oklch(0.985_0.012_75)]" : "bg-[oklch(0.985_0.006_220)]";
   return (
     <div className={`flex-1 border border-line rounded-kin-lg ${toneBg}`}>
@@ -129,8 +165,10 @@ function MiniRecord({ title, tone, reporter, missingName, missingScript, age, la
   );
 }
 
-function TransliterationMatch({ phase, onBack }) {
-  // phase: 'split' -> both cards + link drawing -> 'merged'
+function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
+  // 'split'   → two MiniRecord cards side by side, no link drawn
+  // 'linking' → Y-shape link animates toward the match card
+  // 'merged'  → MATCH CONFIRMED card with unified identity
   const showLink = phase === "linking" || phase === "merged";
   const merged   = phase === "merged";
 
