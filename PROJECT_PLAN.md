@@ -4,15 +4,17 @@
 > major decision. If this file and reality diverge, reality wins and
 > this file gets updated same-day.
 
-Last updated: April 24, 2026 (Day 3 of 25) — end of Day 3 Python
-scaffolding. Env up from zero (uv + setuptools + ruff), Core and
-Integration directories stubbed, Clock Protocol landed per
-test_strategy §5, FakeClock implemented (heapq + async tick),
-layer boundary test enforcing hexagonal imports via AST scan.
-16 tests green in 0.02s, ruff clean.
+Last updated: April 25, 2026 (Day 4 of 25) — end of Day 4. Four
+Claude Code sessions plus a diagnostic pass. SystemClock adapter
+landed (`473424c`). Docs/code reconciled on asyncio_mode + import
+path drift (`e18b595`). Phase 2.5 probe surface assessed. Clock-
+wired Ollama bridge built, timeout cancellation semantics
+characterized, Gemma 4 E2B reasoning-mode trap discovered and
+solved via `think=False`. 19 tests green; adapter has known-good
+2.33s English transcription path.
 Maintainer: Mark Brazinski (solo developer)
-Next scheduled update: end of Day 5-6 first audio pipeline, or 25%
-checkpoint (Day 7-8), whichever comes first.
+Next scheduled update: end of Day 5 canonical adapter work, or
+25% checkpoint (Day 7-8), whichever comes first.
 
 ---
 
@@ -173,7 +175,7 @@ Day  2  │   Block B.5 complete           ← DONE April 24 EOD
         │     - primitives/ split (acb60d6)
         │     - lib/types.ts extracted
 Day  3  └─   Python scaffolding + Core layer start   ← DONE
-Day  4  ┌─ Foundation
+Day  4  ┌─ Foundation                     ← DONE (Apr 25)
 Day  5  │   Gemma hello-world, first audio pipeline,
 Day  6  │   test environment, core data model,
 Day  7  │   25% checkpoint ★
@@ -207,42 +209,81 @@ Day 25  │  edit, upload, finalize Devpost
 ★ = milestone / gate
 ✱ = LLM-as-judge pass
 
-### Day 4 scope (next session)
+### Day 5 scope (next session)
 
-Foundation phase begins. Day 4 is the first day velocity may drop —
-we're crossing from well-specified scaffolding (Day 3 executed
-against test_strategy §5 cleanly) into reality checks against Gemma
-+ Ollama + ffmpeg + audio. The 39-minute Swahili runaway was a
-Day-4-equivalent discovery on the prototype; expect analogous
-surprises.
+Canonical `src/integration/ollama_adapter.py`. This is the largest
+adapter session of the project — `test_strategy.md §2` lists seven
+error branches that all land here: padding applied, padding skipped,
+ffmpeg missing, ffmpeg non-zero exit, 25s timeout, malformed JSON
+(`InvalidToolCall`), GGML crash retry. Plus structlog on every call.
+Plus the first adapter-seam tests using FakeClock for the timeout
+branch specifically.
 
-Target deliverables, in order of decreasing specification strength:
+Day 4's bridge work (`scripts/gemma_hello.py`) and diagnostic passes
+banked three findings that shape Day 5's design:
 
-- `src/integration/system_clock.py` — SystemClock + `SYSTEM_CLOCK`
-  module-level singleton per test_strategy §5. Spec-complete;
-  plan-approve-execute shape.
-- Ollama ≥0.20.3 installed, Gemma 4 E2B pulled, one manual
-  `ollama run` confirms the install works end-to-end.
-- Gemma hello-world script: audio WAV in → raw Gemma output out,
-  single call, no Pydantic validation yet, no canonical adapter yet.
-  Just proves the Python↔Ollama plumbing works and the model runs
-  on this hardware.
-- ffmpeg head-silence padding probe: confirm the canonical filter
-  (`adelay=1000|1000,apad=pad_dur=0.5` per test_strategy §2
-  integration) runs on a known test WAV.
-- Prompt template v1 stub (not canonical — prompts stabilize
-  Day 5-7 per test_strategy §3 fixture-capture timing).
+**1. `think=False` is non-negotiable.** Gemma 4 E2B defaults to
+`think=True` and burns 1400-1800 tokens on internal self-
+deliberation before emitting `content`. With `think=False`, English
+transcription runs in 2.33s at 62 tokens with valid JSON in
+`content` and natural-EOS stop. The canonical adapter sets this
+parameter on every call. ADR-003 records the decision. The 100+-
+file Phase 2.5 testing likely ran at `num_predict=1500` where the
+think block happened to fit inside budget — which is why the trap
+stayed latent until Day 4 ran at `num_predict=400`.
 
-Explicitly **not** Day 4 scope (pushed to Day 5+):
-- Canonical `ollama_adapter` with retry + timeout + structlog
-- Pydantic-validated structured output
-- Live microphone capture
-- Any language beyond EN
+**2. `asyncio.to_thread` cancellation is a Core-time guarantee
+only.** The 25s timeout fires correctly in Core's timeline when
+the timer wins the race, but the worker thread wrapping
+`ollama.chat` continues running to natural completion. The
+underlying daemon HTTP request completes invisibly and the response
+is discarded client-side. Design implication: the adapter's
+timeout is a "Core returns within 25s" contract, not "daemon stops
+computing within 25s." Documented in `scripts/gemma_hello.py`
+docstring; Day 5's adapter inherits.
 
-Day 4 is a Boss-mode opening. Fresh strategy-copilot session brief
-before Claude Code opens. Per §10, budget 2-3 Claude Code sessions
-for Day 4 alone; first audio pipeline spans Days 4-5 and may
-consume 4-6 sessions total.
+**3. Phase 2.5's canonical ffmpeg function is ready to lift.**
+`scripts/test_audio_smoke.py:32-43` contains the production-ready
+`preprocess(src, dst)` function with `adelay=1000|1000,apad=pad_dur=0.5`
+and 16kHz mono s16 conversion. Day 5 copies verbatim into the
+adapter; no re-derivation needed. The only change: replace
+`subprocess.run(..., check=True)` with explicit handling that
+raises `PaddingUnavailable` on `FileNotFoundError` and
+`PaddingFailed` on non-zero exit — matching the §2 error-branch
+names.
+
+Target deliverables (budget: 3-4 Claude Code sessions across Days
+5-6, not 1-2; §10 budget assumed 4-6 across Days 4-5 combined but
+Day 4 used 4 with much of it on diagnostics rather than adapter
+code, so Day 5 absorbs more adapter work than originally projected):
+
+- `src/integration/ollama_adapter.py` — canonical adapter with all
+  seven error branches, Clock-injected 25s timeout, `think=False`,
+  structlog instrumentation, Pydantic validation of output
+- `src/core/prompts.py` (or equivalent) — single authoritative home
+  for the locked transcription prompt, replacing the four-way
+  duplication across `probe_audio.py` + three Phase 2.5 probe files
+- `src/core/rfl_schema.py` — first-pass Pydantic models for the
+  `transcription` and `english_translation` fields the adapter
+  returns (full RFL record shape matures Days 6-7)
+- `tests/integration/test_ollama_adapter_timeout.py` — the Day-1
+  anchor test from `test_strategy.md §8`, using FakeClock
+- `docs/ADR/003-gemma-think-false.md` — records the reasoning-mode
+  decision with provenance
+
+Explicitly **not** Day 5 scope (pushed to Day 6-7):
+- Retry logic on GGML crashes (adapter error branch #8 in the §2
+  list — land with tests Day 6)
+- Full RFL record shape (Name, Age, Relationship, LastSeen,
+  Guardian, DistinguishingMarks) — transcription+translation is the
+  Day 5 deliverable, richer schema is Day 6-7
+- Live microphone capture (Day 7+)
+- Languages beyond EN (Spanish Day 6, Arabic + Farsi Day 7-8)
+- FastAPI + SSE routes (Days 9-10)
+
+Day 5 is a Boss-mode opening. Fresh strategy-copilot session brief
+before Claude Code opens. First Session 1 brief written against
+this document and the `scripts/gemma_hello.py` docstring findings.
 
 ### Why these specific dates
 
@@ -486,12 +527,28 @@ crashing, or looping — on a 16 GiB MacBook Air.
   distinguishing marks, guardian, completion)
 - Fixture capture (Day 5-7, after prompts stabilize)
 
-**Progress markers (Day 3 EOD):**
-- `src/integration/` directory exists with docstring stubs; no
-  modules implemented yet.
-- SystemClock is Day 4 first target (spec-complete via test_strategy §5).
-- Ollama install + Gemma 4 E2B pull + first hello-world inference
-  all start Day 4.
+**Progress markers (Day 4 EOD):**
+- `src/integration/system_clock.py` — ✅ done (Day 4 Session 1,
+  commit `473424c`)
+- `scripts/gemma_hello.py` — ✅ done (Day 4 Session 4,
+  commit `<SESSION_4_HASH>`). Clock-wired Python↔Ollama bridge;
+  happy path runs English transcription in 2.33s at 62 tokens
+  with `think=False`. NOT the canonical adapter — scripts/
+  throwaway that Day 5's `ollama_adapter.py` supersedes.
+- Gemma 4 E2B runtime behavior characterized: reasoning mode is
+  the default and must be disabled via `think=False`; audio
+  encoder works cleanly; pre-M5 Metal buffer errors on stderr
+  are benign (GGML logs them but inference succeeds).
+- `asyncio.to_thread` cancellation documented as Core-time-only
+  guarantee; daemon-side computation continues invisibly after
+  `call.cancel()`. Canonical adapter inherits this semantic.
+- Ollama daemon version 0.21.0 confirmed working; Python SDK
+  `ollama==0.6.1` (distinct semver track from daemon).
+- Phase 2.5 probe surface fully assessed (Session 3). Canonical
+  ffmpeg filter at `scripts/test_audio_smoke.py:32-43` ready to
+  lift into canonical adapter Day 5.
+- Canonical `ollama_adapter.py` with all seven §2 error branches
+  + Pydantic validation + structlog: starts Day 5.
 
 **Definition of done:**
 - Hello-world: record 5 seconds of audio, get transcription, parse
@@ -633,9 +690,8 @@ invariants hold.
   capture wastes staleness-detection mechanism)
 - Red-team suite is separate from regression suite — red-team tests
   what we WANT to fail if invariants break
-- Python test runner: `pytest` with `asyncio_mode = "strict"`, ruff
-  clean (locked Day 3 as part of pyproject scaffolding; ADR-002
-  records reconciliation with earlier "auto" draft)
+- Python test runner: `pytest` with `asyncio_mode = "auto"`, ruff
+  clean (locked Day 3 as part of pyproject scaffolding)
 
 **Risks specific to this area:**
 - Fixture staleness as prompts evolve. Mitigation: prompt-hash in
@@ -791,6 +847,48 @@ playback.
     deps (it's used by Core, not just probes), `fixtures/audio_samples/`
     README documents capture protocol, uv.lock decision documented
     (commit `<HYGIENE_HASH>`)
+- **Day 4 sessions** (Day 4 EOD):
+  - **Session 1 — SystemClock adapter** (commit `473424c`):
+    `src/integration/system_clock.py` per test_strategy §5 with
+    `SYSTEM_CLOCK: Clock = SystemClock()` module-level singleton.
+    Three tests: Protocol conformance via `isinstance`, monotonic
+    non-decreasing, sleep elapses real wall-clock time. 19 tests
+    green.
+  - **Session 2 — Doc/code reconciliation** (commit `e18b595`):
+    asyncio_mode drift (`pyproject.toml` "strict" vs docs "auto")
+    resolved — docs updated to match code. Import path drift
+    (`src.core.*` vs `core.*`) resolved — spec updated to match
+    repo reality. Edits across `docs/test_strategy.md` (5 sites),
+    `PROJECT_PLAN.md` (1 site), `AGENTS.md` (1 site),
+    `docs/phase-5B-scaffolding.md` (7 sites). ADR-002 created.
+  - **Session 3 — Phase 2.5 probe assessment** (read-only, no
+    commit): full assessment of `probe_audio.py` + three Phase
+    2.5 probe files under `scripts/`. Bucketed into direct-lifts
+    (ffmpeg preprocessing), needs-rework (timeout via SIGALRM →
+    Clock-injected asyncio.wait), and probe-only (CLI scaffolding,
+    print statements). Recommended Shape B — hello-world bridge —
+    for Session 4.
+  - **Session 4 — Clock-wired Ollama bridge** (commit
+    `<SESSION_4_HASH>`): `scripts/gemma_hello.py` ~140 lines with
+    `asyncio.wait({call, timer}, FIRST_COMPLETED)` timeout race
+    pattern from test_strategy §5. Two major findings:
+    - **Cancellation semantics**: `asyncio.to_thread` cancellation
+      is a Core-time guarantee only. Worker thread continues
+      running to natural completion after `call.cancel()`; daemon
+      HTTP request completes invisibly and response is discarded
+      client-side. Verified via `_HangingClient` diagnostic at
+      2.0s timeout — task.cancelled=True, task.done=True, thread
+      still alive.
+    - **Gemma 4 E2B reasoning-mode trap**: model defaults to
+      `think=True`, burning 1400-1800 tokens on internal self-
+      deliberation before emitting `content`. At `num_predict=400`
+      the think block consumes the entire budget, leaving content
+      empty or truncated. At `num_predict=1500` (Phase 2.5's value
+      that "worked" for Farsi) the think block fit and content
+      followed — which is why the trap stayed latent through
+      100+-file testing. Solved via `ollama.chat(..., think=False)`:
+      English transcription drops from 15s/400 tokens/empty
+      content to 2.33s/62 tokens/valid JSON. ADR-003 records.
 
 ### Locked (not revisited without explicit Boss-mode decision)
 
@@ -817,6 +915,20 @@ playback.
   hygiene audit)
 - uv.lock decision documented  _(tighten this line if you want to be
   specific about committed vs gitignored)_
+- Gemma 4 E2B reasoning mode: `think=False` on every `ollama.chat`
+  call (locked Day 4 Session 4; ADR-003 records. Without this,
+  model burns 1400-1800 tokens on internal self-deliberation
+  before emitting any content. With `think=False`, English
+  transcription is 2.33s / 62 tokens / valid JSON.)
+- Ollama daemon version: 0.21.0 confirmed working. Python SDK
+  `ollama==0.6.1` is a distinct semver track from the daemon
+  and is NOT the `≥0.20.3` version reference elsewhere in this
+  document — those references are to the daemon. (Locked Day 4
+  Session 4; correction to earlier ambiguity.)
+- `asyncio.to_thread` cancellation is a Core-time guarantee only.
+  Canonical adapter's 25s timeout bounds Core latency, not daemon
+  computation. (Locked Day 4 Session 4; documented in
+  `scripts/gemma_hello.py` docstring.)
 
 ### Open (active decisions)
 
@@ -824,15 +936,26 @@ playback.
   when prompts stabilize
 - Whether to use mic+waveform UI animation or skip and use static
   demo data (depends on Day 5 audio pipeline behavior)
-- Day 4 session shape: SystemClock as a standalone session
-  (spec-complete, fast) before opening the Gemma/audio exploration
-  session, or bundle them. Decide during Day 4 Boss-mode opening.
-- Gemma model pull strategy: pull during Day 4 session (~several GB
-  on the line) or pre-pull before the session starts, depending on
-  bandwidth posture.
-- Day 4 "Gemma hello-world" test harness: `scripts/gemma_hello.py`
-  as a throwaway, or an early integration-test shape. Default
-  throwaway; re-evaluate when the canonical adapter lands Day 5-6.
+- Canonical prompt location: `src/core/prompts.py` (Core-ish,
+  single authoritative home) vs `tests/fixtures/gemma/prompts/intake_v1.txt`
+  (matches test_strategy §3 versioning convention). Day 5 Session 1
+  picks; my lean is Core-facing module with a `PROMPT_V1` constant
+  that also gets written to the fixture directory for hash-binding.
+- `num_predict` value for the canonical adapter: Phase 2.5's 1500
+  was validated against reasoning-mode-on (where the think block
+  needed the headroom); with `think=False` locked, the real budget
+  is probably 200-400 tokens. Day 5 measures empirically on each
+  language and picks per-language or global, depending on spread.
+- Machine-state hygiene for demo recording day: Day 4 diagnostic
+  observed 92% swap usage and Metal buffer errors during high-load
+  conditions. Not affecting inference output (confirmed via
+  `think=False` test), but worth documenting a "before recording"
+  checklist: restart laptop, close browsers, quit Electron apps,
+  clean Ollama daemon restart. Track as Day 13+ demo-hygiene item.
+- Phase 2.5 probe files: keep all four as-is, collapse into one
+  consolidated probe, or archive + delete. My lean (from Session 3
+  assessment): keep as-is but specifically prune `run_three_tests.py`
+  since it targets out-of-scope languages. Defer to Day 5-6.
 
 ---
 
@@ -919,6 +1042,13 @@ tracks project-level failure modes that span multiple areas.
   source-script preservation + fuzzy matching
 - **Crisis message handled as intake** — solved by crisis detection
   blocking RFL tool calls
+- **Gemma 4 E2B reasoning-mode trap** — Day 4 Session 4 discovery.
+  Default `think=True` burns 1400-1800 tokens before content emits.
+  Solved by `think=False` on every adapter call. Provenance:
+  `scripts/gemma_hello.py` docstring + ADR-003.
+- **`asyncio.to_thread` cancellation scope** — Day 4 Session 4
+  characterized. Core-time-only guarantee, not daemon-time. Adapter
+  design accepts this rather than fighting it.
 
 ### Risks to watch
 
@@ -935,6 +1065,20 @@ tracks project-level failure modes that span multiple areas.
 - **lib/types.ts and Core Pydantic schemas drifting apart.**
   Mitigation: integration-layer adapter when Core schemas solidify
   (Day 5-7); header comment in lib/types.ts flags the relationship.
+- **Machine memory pressure during demo recording.** Day 4
+  observed 92% swap usage after 4 sessions + browsers + IDE.
+  Mitigation: Day 13+ demo-hygiene checklist (restart, close
+  browsers, quit Electron apps, clean daemon restart) before
+  recording takes. Not affecting inference today but would
+  corrupt demo day if ignored.
+- **Provenance discipline on "Phase 2.5 validated X" claims.**
+  Day 4's `num_predict=1500 "confirmed stable across EN/ES/AR/FA"`
+  turned out to be Farsi-only. Other Phase 2.5 claims (Swahili
+  runaway, `num_ctx=8000`, `temperature=0.1`, ffmpeg filter) have
+  not been re-verified against the actual probe outputs.
+  Mitigation: 20-minute Day 5 audit pass on remaining claims
+  against `results/phase_2_5_final/*` before baking them into
+  the canonical adapter.
 
 ### Risks accepted but not mitigated
 
@@ -951,9 +1095,17 @@ tracks project-level failure modes that span multiple areas.
 ## 10. Session budget
 
 Projected: ~55 Claude Code sessions over 25 days
-Used as of Day 3 EOD: ~17-19 sessions (~31-35%)
-On pace. Day 3 consumed 3 Claude Code sessions (scaffolding,
-clock+layer-test, probe hygiene) plus this strategy-copilot thread.
+Used as of Day 4 EOD: ~21-23 sessions (~38-42%)
+On pace. Day 4 consumed 4 Claude Code sessions (SystemClock, doc
+reconciliation, probe assessment, clock-wired bridge) plus
+diagnostic passes that burned most of this strategy-copilot thread.
+Three of the four sessions were plan-approve-execute shape with no
+rework; Session 4 required a diagnostic loop after discovering the
+reasoning-mode trap — the loop was correct (surfaced a latent
+project-killer), not wasted.
+
+Day 3 consumed 3 Claude Code sessions (scaffolding, clock+layer-test,
+probe hygiene) plus strategy-copilot plan reviews on this thread.
 All three were plan-approve-execute shape, no rework cycles.
 
 Day 2 consumed 2 Claude Code sessions (B.5.1 primitives split, B.5.2
@@ -961,12 +1113,20 @@ lib/types.ts extraction) plus strategy-copilot plan reviews on this
 thread. Both Claude Code sessions were one-shot plan-approve-execute,
 no rework cycles.
 
-High-velocity phase continues through Day 6 (foundation work against
-well-specified targets). Expect velocity to drop Day 7+ when Gemma
-reality checks hit.
+High-velocity phase continued through Day 4 against a mix of
+well-specified targets (SystemClock, doc reconciliation) and
+first-contact-with-reality work (Gemma runtime behavior). Day 4's
+reasoning-mode discovery front-loaded the "velocity drops when
+Gemma reality checks hit" risk — it arrived on Day 4 instead of
+Day 7+, which is good (found on Day 4, fixable in one parameter,
+before architecture was committed). Day 5 opens against known
+reality: `think=False` baseline, Clock-wired timeout pattern
+proven, ffmpeg function ready to lift.
 
-Sessions worth budgeting heavier than projected:
-- Days 4-5 (first audio pipeline): 4-6 sessions likely, not 2-3
+Sessions worth budgeting heavier than originally projected:
+- Day 5 canonical adapter: 3-4 sessions (originally 1-2 because
+  Day 4 was assumed to split the work; Day 4's diagnostic load
+  shifted real adapter work to Day 5)
 - Days 10-12 (matching logic with corroborating fields): 4-5
   sessions likely
 - Day 22 (final video recording): 3-4 takes + editing is 6+ hours
@@ -1002,6 +1162,12 @@ Key commits:
   boundary test (16 tests passing, 0.02s)
 - `<HYGIENE_HASH>` — Day 3 Session 3: probes dep group + pydantic
   promotion + audio_samples README + uv.lock decision
+- `473424c` — Day 4 Session 1: SystemClock adapter per test_strategy §5
+  (19 tests passing)
+- `e18b595` — Day 4 Session 2: reconcile test_strategy §5/§6 drift
+  with repo reality (asyncio_mode + import path; ADR-002)
+- `<SESSION_4_HASH>` — Day 4 Session 4: clock-wired Ollama bridge
+  with cancellation semantics + reasoning-mode findings (ADR-003)
 
 ---
 
@@ -1019,6 +1185,9 @@ This file is a living document. Update it:
 
 If this file and reality diverge, reality wins. Update same-day.
 
-Last updated: April 24, 2026 (Day 3 of 25) — end of Day 3 Python
-scaffolding. Commits: `87454cc` (scaffolding), `71919d9` (clock +
-layer boundary test), `<HYGIENE_HASH>` (probe hygiene).
+Last updated: April 25, 2026 (Day 4 of 25) — end of Day 4 foundation
+phase. Commits: `473424c` (SystemClock), `e18b595` (doc
+reconciliation + ADR-002), `<SESSION_4_HASH>` (clock-wired Ollama
+bridge + ADR-003). Two major findings this day: `asyncio.to_thread`
+cancellation is Core-time-only; Gemma 4 E2B requires `think=False`
+to avoid reasoning-mode trap. Day 5 opens against known reality.
