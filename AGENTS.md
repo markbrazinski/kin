@@ -48,7 +48,7 @@ imports. You cannot silently cross layers; the test will fail.
 # FORBIDDEN in src/core/*.py:
 import requests
 from fastapi import ...
-from src.integration.ollama_adapter import OllamaAdapter
+from integration.ollama_adapter import OllamaAdapter
 
 # FORBIDDEN in src/integration/*.py:
 from src.ui.server import ...  # wrong direction

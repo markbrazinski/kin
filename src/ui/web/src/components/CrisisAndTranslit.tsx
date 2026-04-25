@@ -3,9 +3,7 @@ import React from 'react';
 import type { ReactNode } from 'react';
 import { IconAlert, IconPause, IconPlay, IconInfo, IconLock, IconArrowRight, IconLink, IconCheck } from './icons';
 import { Button, Chip, Waveform } from './primitives';
-
-export type Language = 'en' | 'es' | 'ar' | 'fa';
-export type MatchPhase = 'split' | 'linking' | 'merged';
+import type { Language, MatchPhase } from '../lib/types';
 
 type CrisisCopyEntry = {
   dir: 'ltr' | 'rtl';

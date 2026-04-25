@@ -1,5 +1,6 @@
 /* KIN — app shell. Top bar, main layout, demo sequencer, keyboard shortcuts. */
-import React, { useState, useEffect, useReducer, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import {
   IconMic, IconLock, IconLanguages, IconInfo, IconSparkle, IconCheck, IconShield,
   IconArrowRight, IconPlay, IconAlert, IconRotate, IconLink, IconX,
@@ -8,11 +9,39 @@ import { Chip, Button, Waveform, CompletenessMeter } from './components/primitiv
 import { RecordCard } from './components/RecordCard';
 import { CrisisReferralCard, TransliterationMatch } from './components/CrisisAndTranslit';
 import { TracePanel } from './components/DevTrace';
+import type {
+  CompletenessSegment,
+  Language,
+  MatchPhase,
+  RecordData,
+  TraceCall,
+} from './lib/types';
+
+type Phase = 'ready' | 'recording' | 'processing' | 'done';
+type View = 'intake' | 'match';
+type StatusTone = 'green' | 'amber' | 'red';
+
+// Input shape passed to logCall — id and t are added by logCall itself.
+type TraceCallInput = {
+  name: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  highlight?: boolean;
+};
+
+type DemoStep = {
+  at: number;
+  state?: Phase;
+  populate?: keyof RecordData;
+  value?: string;
+  lastSeenLocationSource?: string;
+  trace?: TraceCallInput;
+};
 
 // ---------- Demo script ---------------------------------------------------
 // Each step mutates the record object. The sequencer runs these in order against
 // a wall clock to simulate SSE streaming into React state.
-const DEMO_STEPS = [
+const DEMO_STEPS: DemoStep[] = [
   { at: 1000, state: "recording",  trace: { name: "audio_stream.open",        args: { lang_hint: "es" } } },
   { at: 3000, state: "processing", trace: { name: "asr.transcribe",            args: { chunks: 4 }, result: "stream_complete" } },
   { at: 4000, populate: "name",     value: "María Elena Torres",
@@ -34,7 +63,7 @@ const DEMO_STEPS = [
               trace: { name: "update_rfl_record", args: { record_id: "147" }, result: "queued_local" } },
 ];
 
-const INITIAL_RECORD = {
+const INITIAL_RECORD: RecordData = {
   name: "", nameVariants: null, nameNative: null, nameNativeRtl: false,
   age: "", relationship: "", language: "Spanish (Latin America)",
   lastSeenLocation: "", lastSeenLocationSource: "", lastSeenLocationRtl: false,
@@ -44,7 +73,16 @@ const INITIAL_RECORD = {
 };
 
 // ---------- Top bar -------------------------------------------------------
-function TopBar({ sessionLabel, statusLabel, statusTone, queued, lang, setLang }) {
+type TopBarProps = {
+  sessionLabel: string;
+  statusLabel: string;
+  statusTone: StatusTone;
+  queued: number;
+  lang: Language;
+  setLang: Dispatch<SetStateAction<Language>>;
+};
+
+function TopBar({ sessionLabel, statusLabel, statusTone, queued, lang, setLang }: TopBarProps) {
   return (
     <header className="sticky top-0 z-20 bg-paper/95 backdrop-blur border-b border-line">
       <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-6">
@@ -81,8 +119,8 @@ function TopBar({ sessionLabel, statusLabel, statusTone, queued, lang, setLang }
         {/* Language switcher — affects displaced-person-facing surfaces only */}
         <div className="flex items-center border border-line rounded-kin overflow-hidden">
           <span className="px-2 text-muted"><IconLanguages size={14} /></span>
-          {["EN", "ES", "AR", "FA"].map((code, i, arr) => {
-            const k = code.toLowerCase();
+          {["EN", "ES", "AR", "FA"].map((code) => {
+            const k = code.toLowerCase() as Language;
             const active = lang === k;
             return (
               <button
@@ -105,8 +143,14 @@ function TopBar({ sessionLabel, statusLabel, statusTone, queued, lang, setLang }
 }
 
 // ---------- Voice-note affordance ----------------------------------------
-function VoicePanel({ phase, lang, onBegin, elapsedSec }) {
-  // phase: 'ready' | 'recording' | 'processing' | 'done'
+type VoicePanelProps = {
+  phase: Phase;
+  lang: Language;
+  onBegin: () => void;
+  elapsedSec: number;
+};
+
+function VoicePanel({ phase, lang, onBegin, elapsedSec }: VoicePanelProps) {
   const waveState =
     phase === "recording" ? "recording" :
     phase === "processing" ? "processing" :
@@ -178,13 +222,18 @@ function VoicePanel({ phase, lang, onBegin, elapsedSec }) {
   );
 }
 const readyCopyFallback = "Ready to begin intake — explain what KIN does, then press Begin.";
-function formatElapsed(s) {
+function formatElapsed(s: number) {
   const m = Math.floor(s / 60); const sec = Math.floor(s % 60);
   return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
 // ---------- Intake timer + baseline --------------------------------------
-function IntakeTimer({ seconds, running }) {
+type IntakeTimerProps = {
+  seconds: number;
+  running: boolean;
+};
+
+function IntakeTimer({ seconds, running }: IntakeTimerProps) {
   const baseline = 42 * 60; // 42:00
   const amberThreshold = baseline * 0.9;
   const tone =
@@ -218,7 +267,11 @@ function IntakeTimer({ seconds, running }) {
 }
 
 // ---------- Minor-detected header strip ----------------------------------
-function MinorStrip({ complete }) {
+type MinorStripProps = {
+  complete: boolean;
+};
+
+function MinorStrip({ complete }: MinorStripProps) {
   // Persistent, not dismissible. Clears only when guardian subsection complete.
   return (
     <div className="bg-amber-soft border border-amber/40 rounded-kin px-4 py-3 flex items-start gap-3">
@@ -243,7 +296,11 @@ function MinorStrip({ complete }) {
 }
 
 // ---------- Keyboard hint ------------------------------------------------
-function ShortcutHint({ isMac }) {
+type ShortcutHintProps = {
+  isMac: boolean;
+};
+
+function ShortcutHint({ isMac }: ShortcutHintProps) {
   return (
     <div className="fixed bottom-3 right-3 z-10 flex items-center gap-1.5 text-[12px] text-muted bg-paper/80 backdrop-blur border border-hair rounded-kin px-2 py-1">
       <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-line bg-white text-ink">{isMac ? "⌘" : "Ctrl"}</kbd>
@@ -254,7 +311,18 @@ function ShortcutHint({ isMac }) {
 }
 
 // ---------- Demo control dock -------------------------------------------
-function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onClose, phase, view }) {
+type DemoDockProps = {
+  visible: boolean;
+  onStart: () => void;
+  onReset: () => void;
+  onMatch: () => void;
+  onCrisis: () => void;
+  onClose: () => void;
+  phase: Phase;
+  view: View;
+};
+
+function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onClose, phase, view }: DemoDockProps) {
   if (!visible) return null;
   return (
     <div className="fixed bottom-3 left-3 z-30 bg-card border border-line rounded-kin-lg shadow-elevated px-3 py-2.5 w-[min(440px,calc(100%-24px))]">
@@ -299,7 +367,11 @@ function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onClose, phase
 // Rendered when the dock is hidden. Bottom-left, same corner the dock lived in,
 // so the eye finds it without scanning. Click restores the dock; ⌘. still
 // toggles for users whose browser doesn't intercept Cmd+Period.
-function DemoReopenPill({ onOpen }) {
+type DemoReopenPillProps = {
+  onOpen: () => void;
+};
+
+function DemoReopenPill({ onOpen }: DemoReopenPillProps) {
   return (
     <button
       type="button"
@@ -315,28 +387,28 @@ function DemoReopenPill({ onOpen }) {
 
 // ---------- Main App ------------------------------------------------------
 function App() {
-  const [record, setRecord]         = useState(INITIAL_RECORD);
-  const [phase, setPhase]           = useState("ready"); // ready | recording | processing | done
-  const [view, setView]             = useState("intake"); // intake | match
-  const [matchPhase, setMatchPhase] = useState("split");  // split | linking | merged
-  const [lang, setLang]             = useState("en");
-  const [crisisOpen, setCrisisOpen] = useState(false);
-  const [devMode, setDevMode]       = useState(false);
+  const [record, setRecord]                   = useState<RecordData>(INITIAL_RECORD);
+  const [phase, setPhase]                     = useState<Phase>("ready");
+  const [view, setView]                       = useState<View>("intake");
+  const [matchPhase, setMatchPhase]           = useState<MatchPhase>("split");
+  const [lang, setLang]                       = useState<Language>("en");
+  const [crisisOpen, setCrisisOpen]           = useState(false);
+  const [devMode, setDevMode]                 = useState(false);
   const [demoDockVisible, setDemoDockVisible] = useState(true);
-  const [justPopulated, setJustPopulated]     = useState(null);
-  const [timerSec, setTimerSec]     = useState(0);
-  const [timerRunning, setTimerRunning] = useState(false);
-  const [calls, setCalls]           = useState([]);
-  const [highlightedCall, setHighlightedCall] = useState(null);
-  const demoStartRef = useRef(null);
+  const [justPopulated, setJustPopulated]     = useState<string | null>(null);
+  const [timerSec, setTimerSec]               = useState(0);
+  const [timerRunning, setTimerRunning]       = useState(false);
+  const [calls, setCalls]                     = useState<TraceCall[]>([]);
+  const [highlightedCall, setHighlightedCall] = useState<number | null>(null);
+  const demoStartRef = useRef<number | null>(null);
   const callIdRef = useRef(0);
 
   const isMac = useMemo(() => typeof navigator !== "undefined" && /Mac/.test(navigator.platform), []);
 
   // ----- Trace logging helper
-  const logCall = useCallback((call, tOffset = 0) => {
+  const logCall = useCallback((call: TraceCallInput, tOffset = 0): number => {
     const id = ++callIdRef.current;
-    const entry = { id, t: tOffset, ...call };
+    const entry: TraceCall = { id, t: tOffset, ...call };
     setCalls(prev => [...prev, entry]);
     if (call.highlight) {
       setHighlightedCall(id);
@@ -347,7 +419,7 @@ function App() {
 
   // ----- Keyboard shortcuts
   useEffect(() => {
-    const onKey = (e) => {
+    const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;
       if (!mod) return;
       if (e.key === "d" || e.key === "D") {
@@ -375,14 +447,14 @@ function App() {
   }, [timerRunning]);
 
   // ----- Derived state
-  const minor = record.age && parseInt(record.age, 10) > 0 && parseInt(record.age, 10) < 18;
-  const guardianFilled = minor && Object.values(record.guardian).every(v => v && v.trim());
+  const minor = !!record.age && parseInt(record.age, 10) > 0 && parseInt(record.age, 10) < 18;
+  const guardianFilled = minor && Object.values(record.guardian).every(v => !!v && v.trim() !== "");
   const statusLabel = minor && !guardianFilled
     ? "Incomplete — Minor Protection Required"
     : phase === "done" ? "Intake complete · queued for sync" : "Active intake";
-  const statusTone = minor && !guardianFilled ? "amber" : phase === "done" ? "green" : "green";
+  const statusTone: StatusTone = minor && !guardianFilled ? "amber" : phase === "done" ? "green" : "green";
 
-  const segments = [
+  const segments: CompletenessSegment[] = [
     { key: "name", label: "Name", filled: !!record.name },
     { key: "age",  label: "Age",  filled: !!record.age },
     { key: "rel",  label: "Relationship", filled: !!record.relationship },
@@ -401,19 +473,20 @@ function App() {
 
     DEMO_STEPS.forEach((step) => {
       setTimeout(() => {
-        const t = performance.now() - demoStartRef.current;
+        const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
         if (step.state) setPhase(step.state);
         if (step.populate) {
+          const populateKey = step.populate;
+          const value = step.value;
           setRecord(prev => {
-            const next = { ...prev };
-            next[step.populate] = step.value;
+            const next = { ...prev, [populateKey]: value };
             if (step.lastSeenLocationSource) {
               next.lastSeenLocationSource = step.lastSeenLocationSource;
             }
             return next;
           });
-          setJustPopulated(step.populate);
-          setTimeout(() => setJustPopulated(j => j === step.populate ? null : j), 2500);
+          setJustPopulated(populateKey);
+          setTimeout(() => setJustPopulated(j => j === populateKey ? null : j), 2500);
         }
         if (step.trace) logCall(step.trace, t);
       }, step.at);
@@ -423,8 +496,8 @@ function App() {
     const lastAt = DEMO_STEPS[DEMO_STEPS.length - 1].at;
     setTimeout(() => {
       setPhase("done");
-      logCall({ name: "record.commit", args: { record_id: 147, status: "queued_local" }, result: "ok" },
-              performance.now() - demoStartRef.current);
+      const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
+      logCall({ name: "record.commit", args: { record_id: 147, status: "queued_local" }, result: "ok" }, t);
     }, lastAt + 600);
   };
 

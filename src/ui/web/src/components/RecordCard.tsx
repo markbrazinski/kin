@@ -4,37 +4,7 @@ import React from 'react';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { IconCamera, IconShield, IconAlert, IconInfo, IconUser, IconMapPin, IconSparkle, IconLock, IconPause } from './icons';
 import { SectionHeader, Chip, Field } from './primitives';
-
-export type NameVariant = {
-  latin: string;
-  script?: string;
-  rtl?: boolean;
-};
-
-export type GuardianData = {
-  guardianPresent?: string;
-  cpConsent?: string;
-  cmKnown?: string;
-  referralStatus?: string;
-};
-
-export type RecordData = {
-  name: string;
-  nameVariants: NameVariant[] | null;
-  nameNative: string | null;
-  nameNativeRtl: boolean;
-  age: string;
-  relationship: string;
-  language: string;
-  lastSeenLocation: string;
-  lastSeenLocationSource: string;
-  lastSeenLocationRtl: boolean;
-  lastSeenDate: string;
-  circumstance: string;
-  physicalDesc: string;
-  features: string;
-  guardian: GuardianData;
-};
+import type { GuardianData, NameVariant, RecordData } from '../lib/types';
 
 export type RecordCardProps = {
   record: RecordData;

@@ -8,6 +8,7 @@ __pycache__/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
 
 # Node
 node_modules/
@@ -15,7 +16,8 @@ dist/
 .vite/
 
 # Project
-audio_samples/
+audio_samples/*
+!audio_samples/README.md
 results/
 results/phase_2_5_final/
 results/preprocessed_*/

@@ -172,9 +172,9 @@ Code session can't silently violate them.
 ```python
 # src/core/safety_rules.py
 # VALID:
-from src.core.rfl_schema import RFLRecord
+from core.rfl_schema import RFLRecord
 # INVALID (caught by test):
-from src.integration.ollama_adapter import OllamaAdapter  # NO
+from integration.ollama_adapter import OllamaAdapter  # NO
 from fastapi import ...                                    # NO
 import requests                                            # NO
 ```
@@ -183,8 +183,8 @@ import requests                                            # NO
 ```python
 # src/integration/ollama_adapter.py
 # VALID:
-from src.core.clock import Clock
-from src.core.rfl_schema import RFLRecord
+from core.clock import Clock
+from core.rfl_schema import RFLRecord
 # INVALID:
 from src.ui.server import ...  # NO — wrong direction
 ```
@@ -193,8 +193,8 @@ from src.ui.server import ...  # NO — wrong direction
 ```python
 # src/ui/server.py
 # VALID:
-from src.core.rfl_schema import RFLRecord
-from src.integration.ollama_adapter import OllamaAdapter
+from core.rfl_schema import RFLRecord
+from integration.ollama_adapter import OllamaAdapter
 # Decisions still come from Core; UI just orchestrates.
 ```
 
@@ -294,7 +294,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
+asyncio_mode = "strict"  # every async test carries explicit @pytest.mark.asyncio; decorators stay visible
 markers = ["redteam: adversarial cases", "slow: fixture-capture only"]
 addopts = "--strict-markers -ra"
 testpaths = ["tests"]

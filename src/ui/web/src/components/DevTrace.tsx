@@ -2,9 +2,16 @@
    Chronological function-call log with brief highlight when an entry lands. */
 import React from 'react';
 import { IconTerminal, IconX } from './icons';
+import type { TraceCall } from '../lib/types';
 
-function TracePanel({ calls, highlightId, onClose }) {
-  const ref = React.useRef(null);
+export type TracePanelProps = {
+  calls: TraceCall[];
+  highlightId: number | null;
+  onClose: () => void;
+};
+
+function TracePanel({ calls, highlightId, onClose }: TracePanelProps) {
+  const ref = React.useRef<HTMLDivElement | null>(null);
   React.useEffect(() => {
     if (!ref.current) return;
     ref.current.scrollTop = ref.current.scrollHeight;

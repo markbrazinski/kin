@@ -70,7 +70,7 @@ Representative test:
 ```python
 # tests/core/test_safety_rules.py
 import pytest
-from src.core.safety_rules import classify
+from core.safety_rules import classify
 
 CRISIS_CASES = [
     ("en", "I want to kill myself", "crisis_keyword"),
@@ -333,7 +333,7 @@ class Clock(Protocol):
 # src/integration/system_clock.py
 import asyncio
 import time
-from src.core.clock import Clock
+from core.clock import Clock
 
 class SystemClock:
     def monotonic(self) -> float:
@@ -406,7 +406,7 @@ The adapter must use `clock.sleep` for its timeout rather than
 ```python
 # src/integration/ollama_adapter.py  (relevant fragment)
 import asyncio
-from src.core.clock import Clock
+from core.clock import Clock
 
 class InferenceTimeoutError(Exception): ...
 
@@ -437,7 +437,7 @@ class OllamaAdapter:
 import asyncio
 import pytest
 from tests.fakes.fake_clock import FakeClock
-from src.integration.ollama_adapter import OllamaAdapter, InferenceTimeoutError
+from integration.ollama_adapter import OllamaAdapter, InferenceTimeoutError
 
 class HangingClient:
     async def generate(self, _path):
@@ -560,7 +560,7 @@ pnpm exec playwright test --project=chromium
 
 ```toml
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
+asyncio_mode = "strict"  # every async test carries explicit @pytest.mark.asyncio; decorators stay visible
 markers = ["redteam: adversarial cases", "slow: fixture-capture only"]
 addopts = "--strict-markers -ra"
 
