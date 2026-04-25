@@ -4,17 +4,23 @@
 > major decision. If this file and reality diverge, reality wins and
 > this file gets updated same-day.
 
-Last updated: April 25, 2026 (Day 4 of 25) — end of Day 4. Four
-Claude Code sessions plus a diagnostic pass. SystemClock adapter
-landed (`473424c`). Docs/code reconciled on asyncio_mode + import
-path drift (`e18b595`). Phase 2.5 probe surface assessed. Clock-
-wired Ollama bridge built, timeout cancellation semantics
-characterized, Gemma 4 E2B reasoning-mode trap discovered and
-solved via `think=False`. 19 tests green; adapter has known-good
-2.33s English transcription path.
+Last updated: April 28, 2026 (Day 7 of 25) — end of Day 7. Five
+Claude Code sessions across Days 6 and 7, all plan-approve-execute
+shape with zero rework. Day 6 closed three commits (safety_rules
+first-pass `bd9e734`, GGML retry + InferenceFailed `5306d1d`, RFL
+schema expansion `7b0470a`). Day 7 closed two commits (Spanish
+routing `1ddf88c`, Arabic + Farsi routing `8fa3715`). 40 tests
+green, ruff clean. Adapter chapter complete: all 6 exception
+classes have direct test coverage and all four §7-Locked languages
+route through the adapter with language-aware prompts. Core layer
+has safety_rules (English first-pass), language_matrix, and
+expanded RFL schema. Day 8 opens against fully-tested wiring with
+the manual probe (real-audio validation across en/es/ar/fa) as the
+empirical reality check before Day 9-10's matching + FastAPI work.
 Maintainer: Mark Brazinski (solo developer)
-Next scheduled update: end of Day 5 canonical adapter work, or
-25% checkpoint (Day 7-8), whichever comes first.
+Next scheduled update: 25% checkpoint reflection (Day 7-8 boundary
+— Day 8 opener should run the checkpoint), or end of Day 8 if
+substantial work lands.
 
 ---
 
@@ -176,9 +182,9 @@ Day  2  │   Block B.5 complete           ← DONE April 24 EOD
         │     - lib/types.ts extracted
 Day  3  └─   Python scaffolding + Core layer start   ← DONE
 Day  4  ┌─ Foundation                     ← DONE (Apr 25)
-Day  5  │   Gemma hello-world, first audio pipeline,
-Day  6  │   test environment, core data model,
-Day  7  │   25% checkpoint ★
+Day  5  │   Gemma hello-world, first audio pipeline,  ← DONE (Apr 26)
+Day  6  │   test environment, core data model,        ← DONE (Apr 27)
+Day  7  │   25% checkpoint ★                          ← DONE (Apr 28)
 Day  8  └─
 Day  9  ┌─ LLM-as-judge Pass 1 ✱         (Devpost draft + progress)
 Day 10  │
@@ -209,81 +215,63 @@ Day 25  │  edit, upload, finalize Devpost
 ★ = milestone / gate
 ✱ = LLM-as-judge pass
 
-### Day 5 scope (next session)
+### Day 8 scope (next session)
 
-Canonical `src/integration/ollama_adapter.py`. This is the largest
-adapter session of the project — `test_strategy.md §2` lists seven
-error branches that all land here: padding applied, padding skipped,
-ffmpeg missing, ffmpeg non-zero exit, 25s timeout, malformed JSON
-(`InvalidToolCall`), GGML crash retry. Plus structlog on every call.
-Plus the first adapter-seam tests using FakeClock for the timeout
-branch specifically.
+Day 8 opens with the empirical reality check the routing layer has
+been waiting for. Day 7 closed with all four §7-Locked languages
+routing through the adapter via `_build_prompt(lang)` — but no
+real audio has gone through the canonical adapter at `think=False`
+yet. The Day 4 bridge proved English; Phase 2.5 Farsi data was
+collected with reasoning mode on at `num_predict=1500` (the trap-
+masking value). Today's adapter at `num_predict=400` with
+`think=False` against AR/FA real audio is empirically untested.
 
-Day 4's bridge work (`scripts/gemma_hello.py`) and diagnostic passes
-banked three findings that shape Day 5's design:
+Day 8 has two prioritized deliverables:
 
-**1. `think=False` is non-negotiable.** Gemma 4 E2B defaults to
-`think=True` and burns 1400-1800 tokens on internal self-
-deliberation before emitting `content`. With `think=False`, English
-transcription runs in 2.33s at 62 tokens with valid JSON in
-`content` and natural-EOS stop. The canonical adapter sets this
-parameter on every call. ADR-003 records the decision. The 100+-
-file Phase 2.5 testing likely ran at `num_predict=1500` where the
-think block happened to fit inside budget — which is why the trap
-stayed latent until Day 4 ran at `num_predict=400`.
+**1. Manual probe script — `scripts/probe_multilang.py`.** Runs
+real audio samples (`audio_samples/english_01.wav` plus three
+new short clips for ES/AR/FA) through the canonical
+`OllamaAdapter` at `think=False` with the language-aware prompt
+and records latency, eval_count, done_reason, and content shape
+per language. Output: a results file similar to
+`results/farsi_retest_summary_20260423_084616.md` covering all
+four languages. This is the Walk tier of the crawl-walk-run
+multilingual story (per Day 7 opener Boss-mode discussion). If
+AR/FA produce broken transcription, that's where we discover it
+and decide whether per-language prompt files become a Day 11+
+necessity. Estimated 1 session, plus 30-45 min of human time
+finding/recording audio samples (probably 5-10s each). 25%
+checkpoint reflection lands at the start of this session before
+the probe runs.
 
-**2. `asyncio.to_thread` cancellation is a Core-time guarantee
-only.** The 25s timeout fires correctly in Core's timeline when
-the timer wins the race, but the worker thread wrapping
-`ollama.chat` continues running to natural completion. The
-underlying daemon HTTP request completes invisibly and the response
-is discarded client-side. Design implication: the adapter's
-timeout is a "Core returns within 25s" contract, not "daemon stops
-computing within 25s." Documented in `scripts/gemma_hello.py`
-docstring; Day 5's adapter inherits.
+**2. Multilingual safety_rules expansion.** Day 6 Session 1 left
+`safety_rules` as English-only with TODO markers for ES/AR/FA.
+A Spanish speaker in crisis must be detected. This session
+opens with Boss-mode questions about (a) crisis keyword sets
+per language — humanitarian agencies have published lists, but
+which sources, (b) Latin-script `.lower()` vs Arabic-script
+case behavior (Arabic/Persian have no concept of case;
+substring match still works but `.lower()` is a no-op), (c)
+whether RTL languages need different keyword storage. Estimated
+1 session after questions answered.
 
-**3. Phase 2.5's canonical ffmpeg function is ready to lift.**
-`scripts/test_audio_smoke.py:32-43` contains the production-ready
-`preprocess(src, dst)` function with `adelay=1000|1000,apad=pad_dur=0.5`
-and 16kHz mono s16 conversion. Day 5 copies verbatim into the
-adapter; no re-derivation needed. The only change: replace
-`subprocess.run(..., check=True)` with explicit handling that
-raises `PaddingUnavailable` on `FileNotFoundError` and
-`PaddingFailed` on non-zero exit — matching the §2 error-branch
-names.
+Explicitly **not** Day 8 scope (pushed to Day 9+):
+- Matching logic (Jaro-Winkler + corroborating fields) — Day 9-12
+- FastAPI + SSE routes — Day 9-10
+- Live microphone capture — Day 10+
+- UI changes — Day 12-15 SSE-replaces-setTimeout window
+- Per-language prompt files — Day 11+ if probe data warrants
+- Semantic crisis detection via Gemma — Day 9-12 if time
 
-Target deliverables (budget: 3-4 Claude Code sessions across Days
-5-6, not 1-2; §10 budget assumed 4-6 across Days 4-5 combined but
-Day 4 used 4 with much of it on diagnostics rather than adapter
-code, so Day 5 absorbs more adapter work than originally projected):
-
-- `src/integration/ollama_adapter.py` — canonical adapter with all
-  seven error branches, Clock-injected 25s timeout, `think=False`,
-  structlog instrumentation, Pydantic validation of output
-- `src/core/prompts.py` (or equivalent) — single authoritative home
-  for the locked transcription prompt, replacing the four-way
-  duplication across `probe_audio.py` + three Phase 2.5 probe files
-- `src/core/rfl_schema.py` — first-pass Pydantic models for the
-  `transcription` and `english_translation` fields the adapter
-  returns (full RFL record shape matures Days 6-7)
-- `tests/integration/test_ollama_adapter_timeout.py` — the Day-1
-  anchor test from `test_strategy.md §8`, using FakeClock
-- `docs/ADR/003-gemma-think-false.md` — records the reasoning-mode
-  decision with provenance
-
-Explicitly **not** Day 5 scope (pushed to Day 6-7):
-- Retry logic on GGML crashes (adapter error branch #8 in the §2
-  list — land with tests Day 6)
-- Full RFL record shape (Name, Age, Relationship, LastSeen,
-  Guardian, DistinguishingMarks) — transcription+translation is the
-  Day 5 deliverable, richer schema is Day 6-7
-- Live microphone capture (Day 7+)
-- Languages beyond EN (Spanish Day 6, Arabic + Farsi Day 7-8)
-- FastAPI + SSE routes (Days 9-10)
-
-Day 5 is a Boss-mode opening. Fresh strategy-copilot session brief
-before Claude Code opens. First Session 1 brief written against
-this document and the `scripts/gemma_hello.py` docstring findings.
+Day 8 is also the **25% checkpoint** per `§4` arc. Boss-mode
+question to answer at session opening: "Am I building the demo or
+adding features? What should I cut for the remaining 18 days?"
+Honest answer at Day 7 EOD: routing infrastructure is complete
+and tested but unproven against real audio. The probe is THE
+critical-path empirical work between today and Day 13's safety-
+net video recording. If the probe surfaces broken AR/FA behavior
+that requires multi-day prompt iteration, the multilingual demo
+story may need to compress.
 
 ### Why these specific dates
 
@@ -527,28 +515,76 @@ crashing, or looping — on a 16 GiB MacBook Air.
   distinguishing marks, guardian, completion)
 - Fixture capture (Day 5-7, after prompts stabilize)
 
-**Progress markers (Day 4 EOD):**
+**Progress markers (Day 7 EOD):**
 - `src/integration/system_clock.py` — ✅ done (Day 4 Session 1,
   commit `473424c`)
 - `scripts/gemma_hello.py` — ✅ done (Day 4 Session 4,
-  commit `<SESSION_4_HASH>`). Clock-wired Python↔Ollama bridge;
-  happy path runs English transcription in 2.33s at 62 tokens
-  with `think=False`. NOT the canonical adapter — scripts/
-  throwaway that Day 5's `ollama_adapter.py` supersedes.
+  commit `6a45326`, findings docstring at `12b38d5`).
+  Superseded by canonical adapter; retained as bridge evidence.
+- `src/integration/ollama_adapter.py` — ✅ adapter chapter complete.
+  Day 5 landed skeleton + behavior layer (Sessions 1A `e1baa9d` +
+  1B `e3093bc`). Day 6 Session 2 `5306d1d` added the GGML retry
+  mechanism (`(ollama.ResponseError, ollama.RequestError)` retry
+  tuple) and gave `InferenceFailed` direct test coverage. Day 7
+  Sessions 1+2 (`1ddf88c`, `8fa3715`) extended the adapter to
+  accept a `lang: str = "en"` parameter, gate on
+  `is_implemented(lang)` via Core's `language_matrix`, and route
+  all four §7-Locked languages through the same `_build_prompt(lang)`
+  template via `cast(SupportedLang, lang)` at the call site. ALL 6
+  exception classes have direct test coverage:
+  `PaddingUnavailable`, `PaddingFailed`, `InferenceTimeout`,
+  `InvalidToolCall`, `InferenceFailed`, plus `AdapterError` base
+  via inheritance, plus the new `UnsupportedLanguage` for
+  unimplemented language values. structlog base payload includes
+  `lang`. Routing layer: 5 stub-test coverage tests across
+  `test_ollama_adapter_languages.py`. NOT yet validated against
+  real audio in any language other than English (Day 8 manual
+  probe).
+- `src/core/language_matrix.py` — ✅ done (Day 7 Sessions 1+2).
+  `SupportedLang` Literal covers en/es/ar/fa per §7 lock;
+  `IMPLEMENTED_LANGS` frozenset covers all four; `LANGUAGE_NAMES`
+  dict for prompt construction; `is_implemented(lang)` helper.
+  Pure Core: stdlib + typing only. 2 tests in
+  `tests/core/test_language_matrix.py`.
+- `src/core/rfl_schema.py` — ✅ partial RFL record landed (Day 6
+  Session 3 `7b0470a`). Full shape: `TranscriptionResult` (Day 5,
+  unchanged) + `Name` (canonical + source_script Literal +
+  transliterations) + `Age` (value + confidence Literal) +
+  `LastSeen` (location + date_text, both free-text) + `Guardian`
+  (present + consent, flat audit fields, no validators) +
+  `RFLRecord` (top-level with all sub-models optional for
+  multi-turn intake support). Field-level docstrings on every
+  field. 3 structural tests in `tests/core/test_rfl_schema.py`.
+  Single growing model per §7 versioning lock.
+- `src/core/safety_rules.py` — ✅ first-pass English keyword
+  detector (Day 6 Session 1 `bd9e734`). 9 phrases across self-harm
+  / harm-to-others / immediate-danger categories. Non-EN langs
+  return `is_crisis=False` with TODO marker pending Day 8
+  multilingual expansion. 3 tests including case-insensitive
+  matching. 5000-char defensive cap on input.
+- `docs/ADR/003-gemma-think-false.md` — ✅ done (Day 5 Session 1A,
+  `e1baa9d`). Records the `think=False` decision with provenance.
+- Day-1 anchor timeout test — ✅ done. FakeClock-driven, sub-
+  millisecond deterministic verification of the 25s cancellation
+  race. `tests/integration/test_ollama_adapter_timeout.py`.
 - Gemma 4 E2B runtime behavior characterized: reasoning mode is
   the default and must be disabled via `think=False`; audio
   encoder works cleanly; pre-M5 Metal buffer errors on stderr
   are benign (GGML logs them but inference succeeds).
 - `asyncio.to_thread` cancellation documented as Core-time-only
   guarantee; daemon-side computation continues invisibly after
-  `call.cancel()`. Canonical adapter inherits this semantic.
+  `call.cancel()`. Adapter's `InferenceTimeout` docstring carries
+  this language; structlog `inference_timeout` event records
+  `elapsed_s` rather than claiming the daemon stopped.
 - Ollama daemon version 0.21.0 confirmed working; Python SDK
   `ollama==0.6.1` (distinct semver track from daemon).
-- Phase 2.5 probe surface fully assessed (Session 3). Canonical
-  ffmpeg filter at `scripts/test_audio_smoke.py:32-43` ready to
-  lift into canonical adapter Day 5.
-- Canonical `ollama_adapter.py` with all seven §2 error branches
-  + Pydantic validation + structlog: starts Day 5.
+- Phase 2.5 probe surface fully assessed (Day 4 Session 3).
+  Canonical ffmpeg filter at `scripts/test_audio_smoke.py:32-43`
+  was lifted into `OllamaAdapter._preprocess` Day 5.
+- Real-audio multi-language validation: starts Day 8 via
+  `scripts/probe_multilang.py`. The crawl-walk-run framework: today's
+  routing is "crawl"; the probe is "walk"; the demo recording at
+  Day 13-15 is "run."
 
 **Definition of done:**
 - Hello-world: record 5 seconds of audio, get transcription, parse
@@ -593,7 +629,12 @@ every model call, enforcing invariants the model alone can't.
 - `src/core/rfl_schema.py` — Pydantic v2 models for the RFL record:
   Name (with source script + transliterations), Age, Relationship,
   LastSeen (location + date), Guardian (present + consent),
-  DistinguishingMarks  _(docstring stub as of Day 3 EOD; full shape Day 5-7)_
+  DistinguishingMarks  _(landed Day 6 Session 3 `7b0470a`: 6 models
+  total — `TranscriptionResult` + `Name` + `Age` + `LastSeen` +
+  `Guardian` + `RFLRecord`. Field-level docstrings throughout.
+  Single growing model per §7 versioning lock. Cross-field
+  validators for minor-detection deferred to Day 8 multilingual
+  safety expansion.)_
 - `src/core/safety_rules.py` — `classify(text, lang) -> SafetyResult`
   with crisis detection (keyword + semantic paths) for all 4
   languages  _(docstring stub as of Day 3 EOD)_
@@ -889,6 +930,137 @@ playback.
       100+-file testing. Solved via `ollama.chat(..., think=False)`:
       English transcription drops from 15s/400 tokens/empty
       content to 2.33s/62 tokens/valid JSON. ADR-003 records.
+- **Day 5 sessions** (Day 5 EOD):
+  - **Pre-flight — structlog dep** (commit `403898e`): added
+    `structlog==25.5.0` to prod deps in `pyproject.toml` per
+    PROJECT_PLAN §7 Locked. `uv sync` regenerated `uv.lock`.
+    19 tests still green.
+  - **Session 1A — OllamaAdapter skeleton** (commit `e1baa9d`):
+    canonical `src/integration/ollama_adapter.py` with class shape,
+    Clock-injected timeout race, `think=False` hardcoded, ffmpeg
+    `_preprocess()` lifted with `PaddingUnavailable` /
+    `PaddingFailed` branches, structlog event call sites,
+    `TranscriptionResult` Pydantic model in `src/core/rfl_schema.py`,
+    `docs/ADR/003-gemma-think-false.md`. Day-1 anchor test landed:
+    `tests/integration/test_ollama_adapter_timeout.py` uses FakeClock
+    for sub-millisecond deterministic timeout verification. 6
+    exception classes total (1 base + 5 concrete). 20 tests green.
+    The §5 spec example's single `sleep(0)` pattern was found
+    insufficient for sync-client adapters — fix landed in test with
+    comment; spec drift flagged for follow-up.
+  - **Session 1B — adapter behavior layer** (commit `e3093bc`):
+    three new tests covering 3 untested exception branches end-to-
+    end: `test_padding_unavailable_when_ffmpeg_missing`,
+    `test_padding_failed_on_invalid_audio`,
+    `test_invalid_tool_call_on_malformed_json` (parametrized: raw
+    garbage + fence-wrapped malformed). Adapter changes:
+    `_strip_json_fences()` helper for Gemma's markdown-wrapped JSON
+    output; structlog event payloads now match documented schema
+    (`audio_path`, `model` base + per-event fields per
+    test_strategy §2); validation flow strips fences before
+    `TranscriptionResult.model_validate_json` and logs pre-strip
+    content on failure for diagnostics. 5 of 6 exception classes
+    now have direct test coverage. 24 tests green.
+  - **Day 5 close-out** (commit `4469119`): `docs/test_strategy.md`
+    §5 sync-client spec drift fix (single `sleep(0)` → two cycles +
+    `threading.Event`-blocked HangingClient + comment) plus three
+    placeholder hash sites in PROJECT_PLAN.md filled with real
+    commit hashes. Docs-only commit. 24 tests still green.
+  - **Day 5 EOD update** (commit `0087de1`): PROJECT_PLAN.md update
+    capturing Day 5's three sessions + close-out. 211 insertions /
+    148 deletions.
+- **Day 6 sessions** (Day 6 EOD):
+  - **Session 1 — first-pass safety_rules** (commit `bd9e734`):
+    First Core module with real logic. `src/core/safety_rules.py`
+    landed `SafetyResult` Pydantic model + `classify(text, lang)`
+    pure function + 9-keyword English crisis detector across self-
+    harm / harm-to-others / immediate-danger categories.
+    "emergency" intentionally excluded — over-triggers on
+    legitimate humanitarian intake speech ("I left during the
+    emergency"). Non-EN langs return `is_crisis=False` with TODO
+    for Day 8 multilingual. 5000-char defensive cap on input.
+    Schema diverges from test_strategy §2's representative
+    example (`escalate/match_path/allow_rfl_tools` → concrete
+    `is_crisis/matched_keywords/suggested_action/crisis_resources_locale`)
+    documented in inline class docstring. 3 anchor tests:
+    crisis-blocks-intake, normal-proceeds, case-insensitive.
+    27 tests green.
+  - **Session 2 — GGML retry + InferenceFailed coverage** (commit
+    `5306d1d`): Closed the adapter chapter. Probe identified
+    `ollama.ResponseError` + `ollama.RequestError` as the SDK's
+    raised types on daemon-side and transport-level failures (both
+    are plausible GGML-crash modes). Refactored
+    `_call_with_timeout` to propagate raw call exceptions rather
+    than pre-wrapping in `InferenceFailed`; retry policy lives at
+    `transcribe()` call-site with the type-specific tuple. Two new
+    structlog events: `ggml_retry_attempted`,
+    `inference_failed_after_retry`. Three new tests:
+    retry-succeeds-on-second-attempt, retry-failure-raises-
+    InferenceFailed, retry-does-not-catch-timeout (boundary test
+    against future "lazy `except Exception`" regression). All 6
+    adapter exception classes now have direct test coverage.
+    `InferenceFailed` docstring tightened to describe retry
+    semantics and the `InferenceTimeout` boundary. 30 tests green.
+  - **Session 3 — RFL schema expansion** (commit `7b0470a`):
+    Expanded `src/core/rfl_schema.py` from `TranscriptionResult`-
+    only to a partial RFL record. Five new models — `Name`
+    (canonical + source_script Literal of latin/arabic/persian/
+    cyrillic/other + transliterations list), `Age` (value + Literal
+    confidence flag), `LastSeen` (location + date_text both free-
+    text strings), `Guardian` (present + consent flat audit
+    fields, no validators per Q3 lock), `RFLRecord` (all sub-
+    models optional for multi-turn intake). Field-level docstrings
+    on every field of every model — load-bearing for Day 7+
+    intake logic and Day 9-12 matching reading them as the spec.
+    `TranscriptionResult` intentionally NOT folded into
+    `RFLRecord`: two domains, two models, separated by a section-
+    divider comment. Three structural tests: full-payload round-
+    trip, partial-intake-validates, source_script Literal
+    enforcement. 33 tests green.
+- **Day 7 sessions** (Day 7 EOD):
+  - **Session 1 — Spanish language routing** (commit `1ddf88c`):
+    Opened multi-language work per Boss-mode locks: Q1 Spanish-
+    solo first, Q2 caller passes lang, Q3 single prompt template
+    with language hint, Q4 stub tests this session, Q5 multilingual
+    safety as a separate session. Created
+    `src/core/language_matrix.py` with `SupportedLang` Literal
+    (en/es/ar/fa per §7 lock), `LANGUAGE_NAMES` dict for prompt
+    construction, `IMPLEMENTED_LANGS` frozenset (en + es), and
+    `is_implemented(lang)` helper. Pure Core: typing-only imports.
+    Adapter signature changed to
+    `transcribe(audio_path, lang: str = "en")`. New
+    `UnsupportedLanguage` exception fires before any preprocessing
+    when caller asks for a lang in `SupportedLang` but not in
+    `IMPLEMENTED_LANGS`. Module-level `PROMPT` constant replaced
+    with `_build_prompt(lang)` function interpolating
+    `LANGUAGE_NAMES[lang]` via `cast(SupportedLang, lang)` at call
+    site. Structlog base payload includes `lang` on every event;
+    new `unsupported_language` warning event. 5 new tests (3
+    adapter-level: Spanish routes, "ar" raises, English default
+    unchanged regression guard; 2 matrix-level:
+    `IMPLEMENTED_LANGS == {en,es}` regression guard,
+    `is_implemented` membership correctness). 38 tests green.
+  - **Session 2 — Arabic + Farsi language routing** (commit
+    `8fa3715`): Mechanical extension of Session 1. One-line
+    production change: broadened `IMPLEMENTED_LANGS` from
+    `{"en", "es"}` to `{"en", "es", "ar", "fa"}`. Adapter required
+    zero changes — `_build_prompt(lang)` already routed all four
+    languages via `LANGUAGE_NAMES[lang]`. Stale module docstring
+    + comment in `language_matrix.py` updated to reflect both
+    sessions. Test changes: matrix tests' assertions broadened
+    to `{en,es,ar,fa}` and `is_implemented` ar/fa booleans flipped
+    to True; `test_unsupported_language_raises_before_inference`
+    renamed to `test_invalid_language_raises_before_inference`
+    using `lang="klingon"` (after this session "ar" is implemented;
+    the regression guard now exercises non-`SupportedLang` values
+    instead of unimplemented-but-supported ones — same raise
+    mechanism); two new tests mirror the Spanish pattern for
+    Arabic and Farsi. Farsi test asserts substring `"Persian"`
+    (leading word of `LANGUAGE_NAMES["fa"]` = "Persian (Farsi)")
+    so the test survives if the parenthetical is ever dropped.
+    40 tests green. Routing layer COMPLETE — all four §7-Locked
+    languages route through the adapter with language-aware
+    prompts. NOT yet validated against real audio.
 
 ### Locked (not revisited without explicit Boss-mode decision)
 
@@ -916,10 +1088,21 @@ playback.
 - uv.lock decision documented  _(tighten this line if you want to be
   specific about committed vs gitignored)_
 - Gemma 4 E2B reasoning mode: `think=False` on every `ollama.chat`
-  call (locked Day 4 Session 4; ADR-003 records. Without this,
-  model burns 1400-1800 tokens on internal self-deliberation
-  before emitting any content. With `think=False`, English
-  transcription is 2.33s / 62 tokens / valid JSON.)
+  call (locked Day 4 Session 4; canonical adapter enforces this
+  hardcoded as of Day 5 Session 1A `e1baa9d`; ADR-003 records.
+  Without this, model burns 1400-1800 tokens on internal self-
+  deliberation before emitting any content. With `think=False`,
+  English transcription is 2.33s / 62 tokens / valid JSON.)
+- structlog `25.5.0` in prod deps (locked Day 5 pre-flight `403898e`).
+  Adapter uses `structlog.get_logger(__name__)` at module top.
+  Event payload schema documented per test_strategy §2; refined
+  Day 5 Session 1B.
+- Adapter exception count: 6 classes total (1 base `AdapterError` +
+  5 concrete: `PaddingUnavailable`, `PaddingFailed`,
+  `InferenceTimeout`, `InvalidToolCall`, `InferenceFailed`).
+  Padding-applied / padding-skipped are structlog events, NOT
+  exception subclasses. (Locked Day 5 Session 1A; corrects the
+  brief's earlier "seven exception classes" overcount.)
 - Ollama daemon version: 0.21.0 confirmed working. Python SDK
   `ollama==0.6.1` is a distinct semver track from the daemon
   and is NOT the `≥0.20.3` version reference elsewhere in this
@@ -929,33 +1112,102 @@ playback.
   Canonical adapter's 25s timeout bounds Core latency, not daemon
   computation. (Locked Day 4 Session 4; documented in
   `scripts/gemma_hello.py` docstring.)
+- GGML retry catch-tuple: `(ollama.ResponseError, ollama.RequestError)`.
+  Both are plausible GGML-crash modes (ResponseError = daemon
+  caught the crash and returned HTTP 500; RequestError = daemon
+  died mid-request, SDK got connection reset/EOF). Retry once,
+  then surface as `InferenceFailed`. `InferenceTimeout` is NOT
+  in the tuple — timeouts propagate without retry. (Locked Day 6
+  Session 2 `5306d1d`.)
+- `safety_rules.SafetyResult` schema: `is_crisis` + `matched_keywords`
+  + `suggested_action` (Literal block_intake/proceed) +
+  `crisis_resources_locale`. Diverges from test_strategy §2's
+  representative example shape; may grow a `match_path` field
+  when semantic detection lands Day 8-9. Concrete-shape choice
+  documented in inline class docstring. (Locked Day 6 Session 1
+  `bd9e734`.)
+- RFL schema versioning: single growing `RFLRecord` model, no
+  formal versioning. If breaking changes ever needed, they break
+  inline. Hackathon scope; KIN has one consumer. (Locked Day 6
+  Session 3 `7b0470a`.)
+- `RFLRecord` shape decisions: `Name { canonical, source_script,
+  transliterations }` (Q1 single canonical + variants list). `Age
+  { value, confidence }` (Q2 single int + Literal confidence
+  flag). `Guardian { present, consent }` flat audit fields, no
+  cross-field validators (Q3 minor-detection enforcement deferred
+  to Day 8-9 safety expansion). `LastSeen { location, date_text }`
+  flat free-text strings, no date parsing (Q4 — refugees report
+  partial/relative dates; matching does best-effort parsing
+  later). All sub-models optional at top level for multi-turn
+  intake support. (Locked Day 6 Session 3.)
+- Multi-language routing: caller passes `lang: str = "en"`; no
+  detection. Single prompt template parameterized by
+  `LANGUAGE_NAMES[lang]`; per-language prompt files deferred to
+  Day 11+ if probe data warrants. `IMPLEMENTED_LANGS` frozenset
+  in `src/core/language_matrix.py` is the gate; values outside
+  it raise `UnsupportedLanguage` before any inference attempt.
+  (Locked Day 7 Session 1 `1ddf88c`; full set en/es/ar/fa landed
+  Session 2 `8fa3715`.)
+- Adapter exception count revised: 6 classes. `AdapterError` base
+  + 6 concrete (`PaddingUnavailable`, `PaddingFailed`,
+  `InferenceTimeout`, `InvalidToolCall`, `InferenceFailed`,
+  `UnsupportedLanguage`). The Day 5 lock said "5 concrete";
+  Session 1 of Day 7 added the 6th. (Updated Day 7 Session 1.)
 
 ### Open (active decisions)
 
-- Fixture capture timing: Day 5-7 target, exact timing depends on
-  when prompts stabilize
+- **25% checkpoint reflection (Day 8 opener — DUE).** Per §4 arc,
+  Day 7-8 boundary is the 25% checkpoint. Boss-mode questions to
+  answer at session opening: "Am I building the demo or adding
+  features? What should I cut for the remaining 18 days? Is the
+  multilingual claim load-bearing for the demo, or can I narrow
+  to EN + one other if probe data is bad?"
+- **Real-audio probe results (Day 8 outcome).** Today's routing
+  layer is empirically untested for non-English. Day 8 probe
+  determines whether: (a) all four languages produce clean
+  transcription at `think=False` / `num_predict=400` (the
+  optimistic path — ship as-is); (b) one or more languages
+  need prompt tuning (Day 11+ per-language prompt files); (c) a
+  language is broken enough to warrant cutting from the demo
+  story. The demo story flexes around what the probe shows.
+- **Multilingual safety_rules keyword sources.** Day 8 Session 2
+  Boss-mode question: which humanitarian agencies have published
+  vetted crisis keyword lists for ES/AR/FA, and how to handle
+  Latin-script `.lower()` semantics for non-Latin languages
+  (Arabic/Persian have no concept of case; substring match still
+  works but `.lower()` is a no-op).
 - Whether to use mic+waveform UI animation or skip and use static
-  demo data (depends on Day 5 audio pipeline behavior)
-- Canonical prompt location: `src/core/prompts.py` (Core-ish,
-  single authoritative home) vs `tests/fixtures/gemma/prompts/intake_v1.txt`
-  (matches test_strategy §3 versioning convention). Day 5 Session 1
-  picks; my lean is Core-facing module with a `PROMPT_V1` constant
-  that also gets written to the fixture directory for hash-binding.
-- `num_predict` value for the canonical adapter: Phase 2.5's 1500
-  was validated against reasoning-mode-on (where the think block
-  needed the headroom); with `think=False` locked, the real budget
-  is probably 200-400 tokens. Day 5 measures empirically on each
-  language and picks per-language or global, depending on spread.
+  demo data (depends on Day 8+ end-to-end behavior; deferred to
+  Day 10+ when first end-to-end intake runs)
+- Canonical prompt location: `src/core/prompts.py` vs
+  `tests/fixtures/gemma/prompts/intake_v1.txt`. Day 7 work
+  parameterized the prompt as `_build_prompt(lang)` inside the
+  adapter; `src/core/prompts.py` was NOT created. If/when fixture
+  capture starts (Day 8+), the prompt-builder output may get
+  written to `tests/fixtures/gemma/prompts/intake_v1.txt` for
+  hash-binding. Defer the explicit Core module unless Day 9+
+  matching needs to read prompts from Core.
+- `num_predict` value for the canonical adapter: currently 400.
+  Day 8 probe data may surface a need to vary by language;
+  defer until then.
 - Machine-state hygiene for demo recording day: Day 4 diagnostic
   observed 92% swap usage and Metal buffer errors during high-load
-  conditions. Not affecting inference output (confirmed via
-  `think=False` test), but worth documenting a "before recording"
-  checklist: restart laptop, close browsers, quit Electron apps,
-  clean Ollama daemon restart. Track as Day 13+ demo-hygiene item.
-- Phase 2.5 probe files: keep all four as-is, collapse into one
-  consolidated probe, or archive + delete. My lean (from Session 3
-  assessment): keep as-is but specifically prune `run_three_tests.py`
-  since it targets out-of-scope languages. Defer to Day 5-6.
+  conditions. Not affecting inference output, but track as Day 13+
+  demo-hygiene item.
+- Phase 2.5 probe files: keep all four as-is, collapse, or archive?
+  My lean: keep but specifically prune `run_three_tests.py` (out-
+  of-scope languages). Defer to Day 9+.
+- Fixture capture timing: routing layer has stabilized; Day 8
+  probe data is the natural moment to capture the first `*.gemma.jsonl`
+  fixtures. If probe shows clean output, capture immediately. If
+  probe shows broken output, defer until prompt iteration
+  resolves it.
+- GGML retry test design: forcing a SIGABRT in pytest is non-
+  trivial. Day 6 Session 2 picked Q1 option (b) monkeypatch the
+  SDK; landed clean. RESOLVED.
+- test_strategy.md §5 example pattern drift: spec text was wrong
+  (single `sleep(0)` insufficient for sync-client adapters). Day 5
+  close-out commit `4469119` reconciled. RESOLVED.
 
 ---
 
@@ -1095,42 +1347,64 @@ tracks project-level failure modes that span multiple areas.
 ## 10. Session budget
 
 Projected: ~55 Claude Code sessions over 25 days
-Used as of Day 4 EOD: ~21-23 sessions (~38-42%)
-On pace. Day 4 consumed 4 Claude Code sessions (SystemClock, doc
-reconciliation, probe assessment, clock-wired bridge) plus
-diagnostic passes that burned most of this strategy-copilot thread.
-Three of the four sessions were plan-approve-execute shape with no
-rework; Session 4 required a diagnostic loop after discovering the
-reasoning-mode trap — the loop was correct (surfaced a latent
-project-killer), not wasted.
+Used as of Day 7 EOD: ~29-31 sessions (~53-56%)
+**Ahead of pace.** Days 6 and 7 closed under-budget against
+original projections, with five clean atomic commits (`bd9e734`,
+`5306d1d`, `7b0470a`, `1ddf88c`, `8fa3715`). All sessions
+plan-approve-execute shape with zero rework cycles.
 
-Day 3 consumed 3 Claude Code sessions (scaffolding, clock+layer-test,
-probe hygiene) plus strategy-copilot plan reviews on this thread.
-All three were plan-approve-execute shape, no rework cycles.
+Day 7 consumed 2 Claude Code sessions: Spanish routing (Session 1
+`1ddf88c`, ~50 min) and Arabic + Farsi routing (Session 2 `8fa3715`,
+~30 min). Total Day 7 Claude Code time ~80 min. Boss-mode locks
+on five questions before Session 1 brief; mechanical extension
+pattern in Session 2 since Session 1 nailed the routing primitive.
 
-Day 2 consumed 2 Claude Code sessions (B.5.1 primitives split, B.5.2
-lib/types.ts extraction) plus strategy-copilot plan reviews on this
-thread. Both Claude Code sessions were one-shot plan-approve-execute,
-no rework cycles.
+Day 6 consumed 3 Claude Code sessions in ~50 minutes total real
+time: safety_rules first-pass (`bd9e734`), GGML retry decorator
++ `InferenceFailed` coverage (`5306d1d`), RFL schema expansion
+(`7b0470a`). All three first-attempt-clean, no rework. Day 6 was
+the most productive single calendar day on the project so far —
+the equivalent of two normal days of work.
 
-High-velocity phase continued through Day 4 against a mix of
-well-specified targets (SystemClock, doc reconciliation) and
-first-contact-with-reality work (Gemma runtime behavior). Day 4's
-reasoning-mode discovery front-loaded the "velocity drops when
-Gemma reality checks hit" risk — it arrived on Day 4 instead of
-Day 7+, which is good (found on Day 4, fixable in one parameter,
-before architecture was committed). Day 5 opens against known
-reality: `think=False` baseline, Clock-wired timeout pattern
-proven, ffmpeg function ready to lift.
+Day 5 consumed 3 Claude Code sessions plus a docs close-out
+commit (`4469119`) and EOD update (`0087de1`). All plan-approve-
+execute shape with one in-flight adjustment in Session 1B
+(predictable signature-change ripple to Session 1A's timeout test
+mock — fixed in-place, not regression). Day 5 closed slightly
+under-budget vs original projection.
+
+Day 4 consumed 4 Claude Code sessions plus diagnostic passes that
+burned most of that strategy-copilot thread. Three of the four
+were plan-approve-execute with no rework; Session 4 required a
+diagnostic loop after discovering the reasoning-mode trap — the
+loop was correct (surfaced a latent project-killer), not wasted.
+
+Day 3 consumed 3 Claude Code sessions; Day 2 consumed 2; Days 0-1
+are planning + UI work that predates the Python work. All plan-
+approve-execute, no rework cycles.
+
+High-velocity phase has continued through Day 7 against well-
+specified targets. Day 4's reasoning-mode discovery front-loaded
+the "Gemma reality checks" risk; Day 8's manual probe is the next
+empirical reality check, and the first one with multilingual scope.
+If the probe surfaces broken AR/FA behavior, that's where velocity
+could drop. Plan Day 8 with a debug budget.
 
 Sessions worth budgeting heavier than originally projected:
-- Day 5 canonical adapter: 3-4 sessions (originally 1-2 because
-  Day 4 was assumed to split the work; Day 4's diagnostic load
-  shifted real adapter work to Day 5)
-- Days 10-12 (matching logic with corroborating fields): 4-5
-  sessions likely
-- Day 22 (final video recording): 3-4 takes + editing is 6+ hours
+- Day 8 multilingual safety_rules: depends on Boss-mode keyword-
+  source decision; could be 1-2 sessions
+- Day 9-10 FastAPI + SSE routes: 2-3 sessions; this is when the
+  pieces start composing into a callable system
+- Days 10-12 matching logic with corroborating fields: 4-5
+  sessions likely (Jaro-Winkler + multi-field scoring)
+- Day 22 final video recording: 3-4 takes + editing is 6+ hours
   of human time, not session time
+
+Sessions ahead-of-budget:
+- Day 6: projected 2-3 sessions, used 3 in 50 minutes total
+- Day 7: projected 2-3 sessions for routing, used 2 in 80 minutes
+- The bank of saved time should NOT be spent on scope expansion;
+  it's safety-margin for the empirical-reality work in Days 8-12.
 
 ---
 
@@ -1166,8 +1440,40 @@ Key commits:
   (19 tests passing)
 - `e18b595` — Day 4 Session 2: reconcile test_strategy §5/§6 drift
   with repo reality (asyncio_mode + import path; ADR-002)
-- `<SESSION_4_HASH>` — Day 4 Session 4: clock-wired Ollama bridge
-  with cancellation semantics + reasoning-mode findings (ADR-003)
+- `6a45326` — Day 4 Session 4: clock-wired Ollama bridge with
+  cancellation race + happy path
+- `12b38d5` — Day 4 close-out: bridge findings (cancellation
+  semantics + reasoning-mode trap) documented in
+  `scripts/gemma_hello.py` docstring
+- `403898e` — Day 5 pre-flight: structlog added to prod deps
+  (PROJECT_PLAN §7 lock)
+- `e1baa9d` — Day 5 Session 1A: OllamaAdapter skeleton with
+  `think=False` and 25s timeout race; ADR-003 records the
+  reasoning-mode decision (20 tests passing)
+- `e3093bc` — Day 5 Session 1B: adapter behavior layer with padding
+  tests + `_strip_json_fences()` + structlog payload schema +
+  validation against malformed JSON (24 tests passing)
+- `4469119` — Day 5 close-out: `test_strategy.md §5` sync-client
+  spec drift fix + 3 PROJECT_PLAN placeholder hashes filled
+  (24 tests passing)
+- `0087de1` — Day 5 EOD: PROJECT_PLAN.md update through Sessions
+  1A + 1B + close-out
+- `bd9e734` — Day 6 Session 1: first-pass `safety_rules` with
+  English crisis keyword detection (27 tests passing); first
+  Core module with real logic
+- `5306d1d` — Day 6 Session 2: GGML retry decorator on the
+  adapter + `InferenceFailed` direct test coverage; closes the
+  adapter exception chapter (30 tests passing)
+- `7b0470a` — Day 6 Session 3: RFL schema expansion with five
+  new Pydantic models (Name, Age, LastSeen, Guardian, RFLRecord)
+  and field-level docstrings (33 tests passing)
+- `1ddf88c` — Day 7 Session 1: Spanish language routing +
+  `language_matrix.py` + adapter `lang` parameter +
+  `UnsupportedLanguage` exception + `_build_prompt(lang)`
+  (38 tests passing)
+- `8fa3715` — Day 7 Session 2: Arabic + Farsi language routing;
+  one-line broadening of `IMPLEMENTED_LANGS` to cover all four
+  §7-Locked languages (40 tests passing); routing layer COMPLETE
 
 ---
 
@@ -1185,9 +1491,16 @@ This file is a living document. Update it:
 
 If this file and reality diverge, reality wins. Update same-day.
 
-Last updated: April 25, 2026 (Day 4 of 25) — end of Day 4 foundation
-phase. Commits: `473424c` (SystemClock), `e18b595` (doc
-reconciliation + ADR-002), `<SESSION_4_HASH>` (clock-wired Ollama
-bridge + ADR-003). Two major findings this day: `asyncio.to_thread`
-cancellation is Core-time-only; Gemma 4 E2B requires `think=False`
-to avoid reasoning-mode trap. Day 5 opens against known reality.
+Last updated: April 28, 2026 (Day 7 of 25) — end of Day 7
+foundation phase complete. Five commits across Days 6-7 banking
+the Core layer + adapter chapter close + multilingual routing:
+`bd9e734` (safety_rules first-pass), `5306d1d` (GGML retry +
+InferenceFailed), `7b0470a` (RFL schema expansion), `1ddf88c`
+(Spanish routing + language_matrix), `8fa3715` (AR+FA routing).
+40 tests green; 6 of 6 adapter exception classes have direct
+coverage; all four §7-Locked languages route through the adapter
+with language-aware prompts. Day 8 opens against a fully-tested
+wiring layer with the manual probe (real-audio validation across
+en/es/ar/fa) as the empirical reality check, then multilingual
+safety_rules expansion. 25% checkpoint reflection due at Day 8
+opener per §4 arc.

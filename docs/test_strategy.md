@@ -435,26 +435,41 @@ class OllamaAdapter:
 ```python
 # tests/integration/test_ollama_adapter_timeout.py
 import asyncio
+import threading
 import pytest
 from tests.fakes.fake_clock import FakeClock
 from integration.ollama_adapter import OllamaAdapter, InferenceTimeoutError
 
 class HangingClient:
-    async def generate(self, _path):
-        await asyncio.Event().wait()  # hangs forever
+    """Sync client blocked on threading.Event — matches real ollama.chat,
+    which is sync and gets wrapped in asyncio.to_thread by the adapter."""
+    def __init__(self) -> None:
+        self._block = threading.Event()  # never set
+    def generate(self, _path):
+        self._block.wait()
 
 @pytest.mark.asyncio
 async def test_inference_timeout_fires_at_25s_without_wall_clock_wait():
     clock = FakeClock()
-    adapter = OllamaAdapter(HangingClient(), clock=clock, timeout_s=25.0)
+    client = HangingClient()
+    adapter = OllamaAdapter(client, clock=clock, timeout_s=25.0)
 
     task = asyncio.create_task(adapter.transcribe("anything.wav"))
-    await asyncio.sleep(0)  # let adapter set up its internal tasks
+    # Two cycles, not one. The adapter does sync setup (logging, preprocess,
+    # base64 encode) before reaching the timeout race. First sleep(0) lets
+    # transcribe() run up to the await on the timeout race; second sleep(0)
+    # lets the timer task's body execute clock.sleep(25.0) and enqueue into
+    # FakeClock. Without the second cycle, tick(26) finds an empty queue and
+    # the worker thread hangs because the timer never wakes.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
     await clock.tick(26.0)  # jump past the 25s ceiling
 
     with pytest.raises(InferenceTimeoutError, match="elapsed=25.00s"):
         await task
+
+    client._block.set()  # release orphan worker thread
 ```
 
 Runs in ~5ms against FakeClock, not 25 seconds.

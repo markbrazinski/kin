@@ -9,9 +9,59 @@ This file exists to:
      underlying ollama.chat invocation — is the 25s timeout a Core-time
      guarantee or a daemon-time guarantee?
 
-INVESTIGATION FINDINGS (filled in after running --mode investigate):
+INVESTIGATION FINDING 1 — asyncio.to_thread cancellation semantics
+==================================================================
 
-    <to be filled in post-run>
+When the timeout race fires (timer wins, call task is cancelled),
+the worker thread wrapping ollama.chat continues running to natural
+completion. Verified via _HangingClient diagnostic at 2.0s timeout:
+  - task.cancelled() == True
+  - task.done() == True
+  - worker thread still alive in threading.enumerate()
+  - mock chat() never returned
+
+Implication: the 25s adapter timeout in PROJECT_PLAN §3 is a
+Core-time guarantee only. Daemon-side computation continues
+invisibly until natural completion. The HTTP request to Ollama
+finishes in the background; the response is generated, sent,
+and discarded client-side.
+
+Day 5's canonical adapter inherits this semantic. Code comments
+and structlog must be honest: timeout is "Core returns within
+25s," not "daemon stops within 25s."
+
+INVESTIGATION FINDING 2 — Gemma 4 E2B reasoning-mode trap
+=========================================================
+
+Gemma 4 E2B defaults to think=True when the SDK does not pass the
+think parameter. With reasoning enabled, the model emits 1400-1800
+tokens of self-deliberation in message.thinking before any content
+is produced.
+
+Symptoms observed (num_predict=400, no think parameter):
+  - done_reason: "length" (hit cap, not natural EOS)
+  - eval_count: 400 (full budget consumed)
+  - message.content: empty string or cap-truncated mid-token
+  - message.thinking: 1400-1800 chars of internal reasoning
+
+Phase 2.5's "stable at num_predict=1500" Farsi result was the think
+block fitting under the 1500 ceiling — content emerged because there
+was room left. The reasoning-mode behavior was present all along;
+num_predict=1500 just masked it.
+
+Resolution: ollama.chat(..., think=False) disables reasoning mode.
+English transcription with think=False:
+  - latency: 2.33s
+  - done_reason: "stop" (natural EOS)
+  - eval_count: 62
+  - message.content: valid JSON with both required keys
+  - message.thinking: None
+
+NOTE: this bridge file as committed does NOT pass think=False —
+the cruft is intentional. Day 5's canonical adapter at
+src/integration/ollama_adapter.py is the production location for
+think=False; this bridge is superseded once that lands. ADR-003
+will record the decision when Day 5's adapter commits.
 
 Ollama SDK: `ollama` Python client 0.6.1. Distinct semver track from
 the Ollama daemon (CLAUDE.md ≥0.20.3 lock refers to the daemon, not
@@ -52,11 +102,11 @@ PROMPT = (
     "explanation, or commentary. Audio follows."
 )
 
-# num_predict=1500: confirmed stable across EN/ES/AR/FA in Phase 2.5.
-# Provenance: results/farsi_retest_summary_20260423_084616.md.
-# Farsi at num_predict=400 truncated mid-completion; 1500 consistently
-# hits done_reason="stop" (natural EOS) instead of "length" (cap hit).
-# Day 5's canonical adapter inherits this value.
+# num_predict=1500. Phase 2.5's "confirmed stable across EN/ES/AR/FA"
+# claim was actually Farsi-only validation. The 1500 ceiling was
+# masking Gemma 4 E2B's reasoning-mode behavior — see INVESTIGATION
+# FINDING 2 in the module docstring above. Day 5's canonical adapter
+# uses think=False with num_predict=400 instead.
 OPTIONS: dict[str, Any] = {
     "num_ctx": 8000,
     "temperature": 0.1,
