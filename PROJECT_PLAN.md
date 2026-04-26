@@ -4,24 +4,12 @@
 > major decision. If this file and reality diverge, reality wins and
 > this file gets updated same-day.
 
-Last updated: April 28, 2026 (Day 7 of 25) — end of Day 7. Five
-Claude Code sessions across Days 6 and 7, all plan-approve-execute
-shape with zero rework. Day 6 closed three commits (safety_rules
-first-pass `bd9e734`, GGML retry + InferenceFailed `5306d1d`, RFL
-schema expansion `7b0470a`). Day 7 closed two commits (Spanish
-routing `1ddf88c`, Arabic + Farsi routing `8fa3715`). 40 tests
-green, ruff clean. Adapter chapter complete: all 6 exception
-classes have direct test coverage and all four §7-Locked languages
-route through the adapter with language-aware prompts. Core layer
-has safety_rules (English first-pass), language_matrix, and
-expanded RFL schema. Day 8 opens against fully-tested wiring with
-the manual probe (real-audio validation across en/es/ar/fa) as the
-empirical reality check before Day 9-10's matching + FastAPI work.
-Maintainer: Mark Brazinski (solo developer)
-Next scheduled update: 25% checkpoint reflection (Day 7-8 boundary
-— Day 8 opener should run the checkpoint), or end of Day 8 if
-substantial work lands.
+Last updated: April 26, 2026 (Day 10 of 25) — 5am morning. Whisper-medium baseline experiment 5/5 on full-utterance recovery and English translation across all four KIN languages plus the laptop-mic English clip Gemma broke on. Gemma's audio path conclusively refuted across Days 8-9: 30+ test calls, three falsifications (format=<schema>, format='json', prose iteration E1-E5), audio normalization refuted across loudnorm + 4 alternatives, Gemma sampling parameter survey refuted across 5 interventions. Critical finding: Gemma's "schema-valid" Farsi output across multiple sessions was actually only the last 6 words of a 13-second clip — confabulating fluent JSON over partial transcription. Whisper caught all of it.
 
+Architecture pivots to two-model pipeline: Whisper for offline multilingual ASR, Gemma for all structured reasoning (intake building, safety classification, text-only translation, caseworker review summarization). Each model does what it's best at. Hexagonal architecture absorbs the swap cleanly — Core/UI untouched, Integration layer adds whisper_adapter.py mirroring ollama_adapter.py patterns, ollama_adapter.py modified to take text input rather than audio bytes.
+
+Maintainer: Mark Brazinski (solo developer)
+Next scheduled update: end of Day 10 if Whisper integration ships clean, or at first material decision change.
 ---
 
 ## 1. What we're building and why
@@ -33,7 +21,7 @@ dependency. It accepts voice intake in English, Spanish, Arabic, or
 Farsi, produces structured records compatible with Primero and proGres
 data shapes, and surfaces cross-session matches when the same missing
 person appears in two aid workers' records under different
-transliterations.
+transliterations.KIN's transcription stage uses Whisper (OpenAI's open-source multilingual ASR model, run locally) for audio-to-text; Gemma 4 E2B handles all downstream reasoning — structured intake record building, multilingual safety classification, text-only translation, and caseworker review. Both models run offline on the laptop, no network dependency.
 
 ### The real problem
 
@@ -90,9 +78,9 @@ unlisted) + writeup.
 
 ## 3. Architecture (locked)
 
-Three-layer hexagonal design. Enforcement is non-negotiable — a
-CI test validates layer boundaries via AST import scanning (due in
-Day 3 scaffolding).
+Three-layer hexagonal design. Enforcement is non-negotiable — a CI test
+validates layer boundaries via AST import scanning (in place since Day 3
+scaffolding).
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -106,8 +94,13 @@ Day 3 scaffolding).
                      ↓
 ┌──────────────────────────────────────────────────┐
 │  Integration layer (src/integration/)            │
-│  - ollama_adapter (canonical ffmpeg padding,     │
-│    25s timeout, structlog)                       │
+│  - whisper_adapter (audio → text transcription   │
+│    in source language; faster-whisper backend,   │
+│    whisper-medium int8, structlog, timeout)      │
+│  - ollama_adapter (text → text reasoning;        │
+│    structured intake, translation, safety        │
+│    classification; canonical 25s timeout,        │
+│    structlog)                                    │
 │  - storage_adapter (JSONL)                       │
 │  - sync_adapter (RFL-shaped JSON export)         │
 │  - system_clock (Clock Protocol impl)            │
@@ -138,37 +131,64 @@ Day 3 scaffolding).
 
 Three reasons, each doing real work:
 
-**1. Testability.** Core is pure — unit tests run in milliseconds with
+**1. Single-responsibility models.** Whisper is purpose-built for offline
+multilingual ASR — trained on 680,000 hours of multilingual audio,
+de-facto reference for the task. Gemma 4 E2B is purpose-built for
+text reasoning under constrained compute. Each model does what it's
+best at. The decision was empirically driven: Days 8-9 falsified
+Gemma's audio path across 30+ test calls, three different format-
+enforcement attempts, audio preprocessing variations, and sampling
+parameter tuning. Whisper baseline (Day 10 morning) recovered full
+utterances correctly across all four KIN languages where Gemma
+either dropped content or confabulated.
+
+**2. Testability.** Core is pure — unit tests run in milliseconds with
 no fixtures, no network mocks, no model calls. Integration tests use
-stub clients at the adapter seam. UI is dumb and orchestrated through
-Core.
+stub clients at each adapter seam. UI is dumb and orchestrated through
+Core. The two-adapter Integration layer means whisper-side and
+gemma-side failures are isolated and independently testable.
 
-**2. Demo reliability.** If Ollama hangs (it has — we saw a 39-minute
-runaway loop on Swahili), the adapter's 25-second timeout contains
-the damage and Core's fallback paths take over. A demo machine never
-hangs on stage.
+**3. Demo reliability.** If Whisper hangs (it shouldn't — local model,
+deterministic latency ~8s for whisper-medium), 25s timeout pattern
+inherited from ollama_adapter contains the damage. If Gemma hangs on
+text-only reasoning, same protection. A demo machine never hangs on
+stage.
 
-**3. Defensibility against "it's just a Gemma wrapper."** Judges who
-ask "what did you build besides call Gemma?" can point to the Core
-layer: safety rules, matching logic, scoring, invariants. Gemma is
-one service call inside a larger reasoning system.
+**4. Defensibility against "it's just a Gemma wrapper."** Judges who
+ask "what did you build besides call Gemma?" can point to: (1) the
+two-model architectural decision with empirical evidence, (2) the
+Core layer's safety rules, matching logic, scoring, invariants, and
+(3) the Integration layer's adapter discipline. Multi-model pipelines
+are how production AI systems are built. KIN demonstrates engineering
+judgment, not just model usage.
 
 ### Key technical locks
 
-- Model: **Gemma 4 E2B** (NOT E4B, NOT 26B, NOT 31B). E2B runs
-  comfortably on 8–16 GB field-hardware. E4B crashes Ollama ≤0.20.2
-  with GGML errors and barely fits on the demo machine.
-- Languages: **EN / ES / AR / FA only.** Nine evaluated during Phase
-  2.5; five ruled out for coverage, fixture availability, or
-  fine-tuning inconsistency.
-- Matching: source-script exact + transliteration fuzzy (Jaro-Winkler
-  ≥0.85) + corroborating fields scored against ~0.7 threshold.
-  Human-in-the-loop confirmation, no auto-merge, **no LLM in the
-  matching path.**
-- Audio: ffmpeg head-silence padding required before inference;
-  canonical adapter owns this.
-- Timeouts: 25 seconds per inference call, enforced by adapter via
-  FakeClock-driven tests (docs/test_strategy.md §8).
+- ASR model: **Whisper-medium int8** via faster-whisper (CTranslate2
+  backend). NOT whisper-tiny/base/small (multilingual accuracy on
+  AR/FA insufficient). NOT whisper-large-v3 (latency exceeds budget
+  on 16GB MacBook Air). Empirically validated on all four KIN
+  languages Day 10 morning at ~8s per inference.
+- Reasoning model: **Gemma 4 E2B** at think=False (NOT E4B, NOT 26B,
+  NOT 31B). E2B runs comfortably on 8-16 GB field hardware. Used for
+  text-input reasoning: structured intake, translation, safety
+  classification, caseworker review.
+- Languages: **EN / ES / AR / FA only.** Whisper-medium handles all
+  four cleanly; Phase 2.5's nine evaluations and rule-outs (Swahili,
+  Bengali, Amharic, etc.) remain valid.
+- Pipeline: audio → Whisper transcribe (source language) → Gemma
+  text-only translation (English) → TranscriptionResult. Two adapter
+  calls per audio input. Latency budget: ~8s Whisper + ~2s Gemma
+  text ≈ ~10s. Comfortably under 25s timeout.
+- Matching: source-script exact + transliteration fuzzy
+  (Jaro-Winkler ≥0.85) + corroborating fields scored against ~0.7
+  threshold. Human-in-the-loop confirmation, no auto-merge, **no LLM
+  in the matching path.**
+- Audio: ffmpeg head-silence padding required before Whisper
+  inference; whisper_adapter owns this (lifted from ollama_adapter
+  pattern).
+- Timeouts: 25 seconds per inference call across both adapters,
+  enforced via FakeClock-driven tests.
 
 ---
 
@@ -385,27 +405,51 @@ what's already decided, and what to watch for.
 
 ### 6.1 Planning + architecture
 
-**Goal:** Ensure the project solves a problem that a tired judge at
-10 PM cares about, using an architecture that survives reality checks
-during build.
+**Goal:** Reliably run Whisper-medium for offline multilingual ASR
+and Gemma 4 E2B for text-only reasoning, producing structured intake
+records on a 16GB MacBook Air. Each model does what it's best at;
+neither is asked to do work outside its strength.
 
 **Deliverables (all complete as of April 24):**
-- Phase 0-5C planning documents in `/mnt/project/phase-*.md`
-- Framing lock: "aid-worker copilot for intake, feeds Primero/proGres-shaped records"
-- Narrator, hero, persona, beneficiary identified and distinct
-- Architecture Decision Records in `docs/ADR/`
-- `docs/test_strategy.md` with invariant-first testing strategy
-- `docs/phase-5B-scaffolding.md` with directory tree and migration plan
-- Prize strategy covering primary ($10K Digital Equity) + secondary
-  categories
-- This `PROJECT_PLAN.md` document (tracked as of Day 2)
+**Deliverables:**
+- `src/integration/whisper_adapter.py` — canonical adapter with:
+  - faster-whisper backend, whisper-medium int8 model
+  - ffmpeg head-silence padding before transcription
+  - Source-language transcription only (translate mode handled by
+    gemma adapter for architectural clarity)
+  - Clock-injected 25-second timeout via FakeClock in tests
+  - structlog structured logging of every call
+  - Exception classes mirroring ollama_adapter pattern
+- `src/integration/ollama_adapter.py` — modified to accept text
+  input rather than audio bytes:
+  - Text-only chat() calls (no images parameter)
+  - Used for: translation, safety classification, structured intake
+    reasoning, caseworker summarization
+  - All existing exception classes preserved (PaddingUnavailable,
+    PaddingFailed deprecated to whisper_adapter; new ones may be
+    needed for text-only failures)
+- `src/core/rfl_schema.py` `TranscriptionResult` — UNCHANGED.
+  Two string fields. Whisper produces transcription; Gemma produces
+  english_translation; adapter combines into TranscriptionResult.
+- Pipeline orchestration: a thin function in Integration that takes
+  audio path + lang, calls whisper_adapter, calls ollama_adapter for
+  translation, returns TranscriptionResult. May live in
+  ollama_adapter or as a new transcription_pipeline.py — Day 10
+  Session 1 to decide.
+- Fixture capture (Day 11+, after pipeline stabilizes).
 
 **Definition of done:**
-- All locked decisions ratified and documented
-- No scope ambiguity remains on what KIN is and isn't
-- Architecture is testable in isolation (layer boundary test due in
-  Day 3 Python scaffolding)
-- ✅ Done
+- Hello-world: record 5 seconds of audio, get transcription +
+  translation, parse into RFL fields — works in all 4 languages
+- 20 successful end-to-end runs in a row on at least one language
+  (typically EN)
+- Timeout test fires reliably for both adapters (FakeClock-driven,
+  in test suite)
+- TranscriptionResult validates 100% of the time (Whisper produces
+  reliable strings; no JSON envelope dependency)
+- No runaway loops observed in red-team suite
+- Layer boundary test still green (Core imports nothing from
+  Integration or UI)
 
 **Key decisions already made:**
 - Hexagonal three-layer architecture (Core / Integration / UI)
@@ -417,11 +461,21 @@ during build.
 - Three LLM-as-judge passes (not two)
 
 **Risks specific to this area:**
-- Planning documents going stale as reality diverges. Mitigation:
-  update this PROJECT_PLAN.md at every checkpoint.
-- Decisions getting re-litigated mid-build because no one remembers
-  they were made. Mitigation: section 7 of this doc tracks "Locked /
-  Open / Done" state explicitly.
+- Whisper-medium accuracy degrading on noisy field audio.
+  Mitigation: Day 11 single-Fiverr-recording validation.
+- Whisper-medium latency on full demo recording day. Mitigation:
+  pre-recorded video allows editing out load time + first-call
+  cold start.
+- Gemma's text-only translation quality on AR/FA. Mitigation: Day
+  10 PM verification post-pipeline build; if Gemma's translation is
+  weaker than Whisper's translate mode, pivot to Whisper
+  translate-only and remove the Gemma translation step.
+- Two-adapter architecture introducing race conditions or ordering
+  bugs. Mitigation: explicit pipeline orchestration function with
+  unit tests covering both adapters independently.
+- Cold-start: model loading time across two models could bloat demo
+  recordings. Mitigation: pre-warm both models before recording
+  takes (Day 22+).
 
 ---
 
@@ -1062,6 +1116,30 @@ playback.
     languages route through the adapter with language-aware
     prompts. NOT yet validated against real audio.
 
+- **Day 8 falsifications** (closed): format=<schema> silently ignored
+  on Gemma audio path under think=False; format='json' (string)
+  silently ignored under same condition. Issue #15260 footgun confirmed.
+  Adapter unchanged through these falsifications. Two clean stops at
+  the spike gate.
+- **Day 9 prose iteration** (closed): five experiments E1-E5 ran
+  against EN baseline. E1 schema-passed but content-failed
+  ("who's old" hallucination). E2/E3 schema-passed but
+  diversity-failed (deterministic-identical across runs). E4 surfaced
+  multi-utterance audio in english_01.wav. E5 destabilized on
+  doubled instructions. No shippable winner.
+- **Day 9 audio preprocessing falsification** (closed): loudnorm to
+  -16 LUFS made transcription worse, not better. Refuted as the gate.
+- **Day 9 evening parameter survey** (closed): 10 interventions across
+  audio preprocessing (5) and Gemma sampling parameters (5). 0/30
+  envelope success. Conclusively refuted preprocessing/parameter tuning
+  as fixes.
+- **Day 10 Whisper baseline experiment** (decisive): 5/5 full-utterance
+  recovery + English translation across all four KIN languages plus
+  the laptop-mic English clip. ~8s latency. Critical finding:
+  Gemma's "schema-valid" Farsi output across all prior sessions was
+  partial — last 6 words of a 13-second clip. Whisper recovered the
+  full sentence. Architectural pivot to Whisper+Gemma confirmed.
+
 ### Locked (not revisited without explicit Boss-mode decision)
 
 - Framing: aid-worker copilot for intake, feeds Primero/proGres
@@ -1153,6 +1231,20 @@ playback.
   `InferenceTimeout`, `InvalidToolCall`, `InferenceFailed`,
   `UnsupportedLanguage`). The Day 5 lock said "5 concrete";
   Session 1 of Day 7 added the 6th. (Updated Day 7 Session 1.)
+- **ASR pipeline: Whisper-medium int8 via faster-whisper.** Locked
+  Day 10 morning. NOT whisper-tiny/base/small (multilingual
+  accuracy insufficient). NOT whisper-large-v3 (latency budget).
+- **Two-model pipeline shape: Whisper(transcribe) → Gemma(text
+  translate) → TranscriptionResult.** Locked Day 10 morning per
+  Mark's Boss-mode call. (b) was chosen over (a) Whisper-only and
+  (c) Whisper+Gemma-structured-intake-in-one-pass. Single-
+  responsibility split: Whisper does ASR, Gemma does text reasoning.
+- **think=False remains locked on Gemma's text path** (ADR-003).
+  Was never the audio-path issue; remains correct for text reasoning
+  to preserve the num_predict=400 budget.
+- **format= parameter abandoned for Gemma calls** (Day 8 evidence).
+  Adapter does not pass format= on any chat() call. Output validation
+  remains via Pydantic on the receiving side.
 
 ### Open (active decisions)
 
@@ -1162,14 +1254,7 @@ playback.
   features? What should I cut for the remaining 18 days? Is the
   multilingual claim load-bearing for the demo, or can I narrow
   to EN + one other if probe data is bad?"
-- **Real-audio probe results (Day 8 outcome).** Today's routing
-  layer is empirically untested for non-English. Day 8 probe
-  determines whether: (a) all four languages produce clean
-  transcription at `think=False` / `num_predict=400` (the
-  optimistic path — ship as-is); (b) one or more languages
-  need prompt tuning (Day 11+ per-language prompt files); (c) a
-  language is broken enough to warrant cutting from the demo
-  story. The demo story flexes around what the probe shows.
+
 - **Multilingual safety_rules keyword sources.** Day 8 Session 2
   Boss-mode question: which humanitarian agencies have published
   vetted crisis keyword lists for ES/AR/FA, and how to handle
@@ -1187,9 +1272,7 @@ playback.
   written to `tests/fixtures/gemma/prompts/intake_v1.txt` for
   hash-binding. Defer the explicit Core module unless Day 9+
   matching needs to read prompts from Core.
-- `num_predict` value for the canonical adapter: currently 400.
-  Day 8 probe data may surface a need to vary by language;
-  defer until then.
+
 - Machine-state hygiene for demo recording day: Day 4 diagnostic
   observed 92% swap usage and Metal buffer errors during high-load
   conditions. Not affecting inference output, but track as Day 13+
@@ -1208,6 +1291,18 @@ playback.
 - test_strategy.md §5 example pattern drift: spec text was wrong
   (single `sleep(0)` insufficient for sync-client adapters). Day 5
   close-out commit `4469119` reconciled. RESOLVED.
+- **Whisper integration brief execution** (Day 10 Session 1, ~90 min).
+  Build whisper_adapter.py, modify ollama_adapter.py to text-only,
+  add tests, run multilang probe with new pipeline.
+- **Pipeline orchestration location.** Whether the audio→text→TranscriptionResult
+  flow lives in ollama_adapter, whisper_adapter, or a new
+  transcription_pipeline.py. Day 10 Session 1 to decide.
+- **Whisper translate-mode fallback.** If Gemma's text-only translation
+  on AR/FA is weaker than Whisper's translate mode, pivot to Whisper
+  translate-only. Day 10 PM verification.
+- **Single Fiverr Spanish recording** (Day 11). Validate studio-quality
+  audio works through new pipeline before committing all 5 Fiverr
+  orders.
 
 ---
 
@@ -1301,6 +1396,18 @@ tracks project-level failure modes that span multiple areas.
 - **`asyncio.to_thread` cancellation scope** — Day 4 Session 4
   characterized. Core-time-only guarantee, not daemon-time. Adapter
   design accepts this rather than fighting it.
+
+- **Gemma's audio path silently ignoring format= under think=False
+  (Issue #15260)** — empirically falsified Day 8 across schema-mode
+  and string-mode. Refuted as a path; Whisper substituted as ASR.
+- **Gemma's audio path producing partial transcriptions presented
+  as schema-valid output** — Farsi case discovered Day 10. Whisper
+  caught all of it. The two-model pipeline eliminates this entire
+  class of failure.
+- **Audio preprocessing as a tuning knob** — refuted across 5
+  interventions Day 9 evening. Whisper sidesteps the question.
+- **Gemma sampling parameters as a tuning knob** — refuted across 5
+  interventions Day 9 evening. Not relevant to Whisper.
 
 ### Risks to watch
 

@@ -1,15 +1,9 @@
-"""Canonical Gemma 4 E2B adapter: ffmpeg padding, 25s Clock timeout, structlog.
+"""Canonical Gemma 4 E2B text-only adapter: 25s Clock timeout, structlog.
 
-Session 1A scope (Day 5): structural skeleton — exception hierarchy,
-OllamaAdapter class shape, Clock-injected timeout race with think=False
-hardcoded, ffmpeg preprocess() lifted from scripts/test_audio_smoke.py
-with PaddingUnavailable / PaddingFailed branches, structlog event call
-sites with minimal payloads, TranscriptionResult Pydantic validation
-mapping ValidationError → InvalidToolCall.
-
-Session 1B (this commit): structlog payload schema refinement,
-_strip_json_fences helper for Gemma's markdown-wrapped JSON output,
-padding-branch and InvalidToolCall tests.
+Day 10 refactor: audio path replaced by Whisper (see whisper_adapter.py +
+results/whisper_baseline_20260426_114250.md). OllamaAdapter is now a
+text-in/text-out interface to Gemma 4 E2B for translation (and, in
+later phases, RFL reasoning + native tool calls).
 
 Inherits two non-negotiable findings from Day 4 Session 4
 (see scripts/gemma_hello.py docstring):
@@ -27,15 +21,10 @@ Inherits two non-negotiable findings from Day 4 Session 4
 from __future__ import annotations
 
 import asyncio
-import base64
-import subprocess
-import tempfile
-from pathlib import Path
 from typing import Any, cast
 
-import ollama  # for ResponseError + RequestError, retried in transcribe()
+import ollama  # for ResponseError + RequestError, retried in translate()
 import structlog
-from pydantic import ValidationError
 
 from core.clock import Clock
 from core.language_matrix import (
@@ -44,97 +33,72 @@ from core.language_matrix import (
     SupportedLang,
     is_implemented,
 )
-from core.rfl_schema import TranscriptionResult
+from integration._errors import AdapterError, InferenceFailed, InferenceTimeout
 from integration.system_clock import SYSTEM_CLOCK
+
+__all__ = [
+    "AdapterError",
+    "InferenceFailed",
+    "InferenceTimeout",
+    "InvalidToolCall",
+    "MODEL",
+    "OPTIONS",
+    "OllamaAdapter",
+    "UnsupportedLanguage",
+]
 
 log = structlog.get_logger(__name__)
 
 MODEL = "gemma4:e2b"
-PAD_FILTER = "adelay=1000|1000,apad=pad_dur=0.5"
 TRUNCATE_CHARS = 500
 OPTIONS: dict[str, Any] = {
     "num_ctx": 8000,
     "temperature": 0.1,
-    # num_predict=400 (not Phase 2.5's 1500) is the post-think=False budget.
-    # The 1500 ceiling was masking Gemma 4 E2B's reasoning-mode behavior;
-    # with think=False locked, English transcription completes in ~62 tokens.
-    # See scripts/gemma_hello.py finding 2.
     "num_predict": 400,
 }
 
 
-def _build_prompt(lang: SupportedLang) -> str:
-    """Build a language-aware transcription prompt.
+def _build_translate_prompt(text: str, source_lang: SupportedLang) -> str:
+    """Build a plain-text translation prompt.
 
-    Single template with the language name interpolated. Per Day 7
-    Session 1 Q3 lock: per-language prompt files deferred to Day 11+
-    if empirical tuning warrants.
+    Plain text first per ADR (Day 10 plan §8d): if probe shows wrapped
+    or commentary-laden output, follow up with `format="json"` and a
+    minimal {"english": str} schema in a separate change.
     """
-    lang_name = LANGUAGE_NAMES[lang]
+    lang_name = LANGUAGE_NAMES[source_lang]
     return (
-        f"You will receive an audio clip in {lang_name}. "
-        f"Perform these two tasks in order and return as valid JSON "
-        f"with keys 'transcription' and 'english_translation'. "
-        f"Transcribe the audio in {lang_name}; provide an English "
-        f"translation. Do not include any other text, explanation, "
-        f"or commentary. Audio follows."
+        f"Translate the following {lang_name} text to English. "
+        f"Return only the English translation as plain text, with no "
+        f"commentary, no quotation marks, and no explanation.\n\n"
+        f"{lang_name} text: {text}"
     )
 
 
-class AdapterError(Exception):
-    """Base for all OllamaAdapter failures."""
-
-
-class PaddingUnavailable(AdapterError):
-    """ffmpeg binary not on PATH. Demo cannot proceed without it."""
-
-
-class PaddingFailed(AdapterError):
-    """ffmpeg returned non-zero exit. stderr captured in the message."""
-
-
-class InferenceTimeout(AdapterError):
-    """25s timer won the race against ollama.chat.
-
-    NOTE: this is a Core-time guarantee only. The worker thread wrapping
-    ollama.chat continues running to natural completion; the daemon's
-    HTTP request finishes in the background and the response is
-    discarded client-side. See scripts/gemma_hello.py finding 1 and
-    PROJECT_PLAN §7 Locked.
-    """
-
-
 class InvalidToolCall(AdapterError):
-    """Gemma's response failed Pydantic validation. Raw response in message."""
+    """Reserved for future structured-output paths (tool calls, schema validation).
 
-
-class InferenceFailed(AdapterError):
-    """Ollama inference failed after the retry-once mechanism gave up.
-
-    Raised when both call attempts to ollama.chat surfaced
-    ollama.ResponseError or ollama.RequestError. InferenceTimeout is
-    a separate path and never converts to this class.
+    Not raised by the current text-only translate path. Kept defined so
+    safety-rules and future RFL-reasoning code can import a stable name.
     """
 
 
 class UnsupportedLanguage(AdapterError):
     """Lang parameter is not in IMPLEMENTED_LANGS.
 
-    Distinct from PaddingFailed/InferenceTimeout/InferenceFailed —
-    this fires BEFORE any preprocessing or inference attempt, when
-    the caller asks for a lang we haven't wired up yet (e.g., 'ar'
-    or 'fa' as of Day 7 Session 1). Fail loud rather than silently
-    fall through to the English path.
+    Distinct from InferenceTimeout / InferenceFailed — this fires
+    BEFORE any inference attempt, when the caller asks for a lang we
+    haven't wired up yet. Fail loud rather than silently falling
+    through to a default path.
     """
 
 
 class OllamaAdapter:
-    """Canonical Integration-layer adapter to Gemma 4 E2B via Ollama.
+    """Integration-layer text-in/text-out adapter to Gemma 4 E2B via Ollama.
 
-    The adapter is the single chokepoint between Core and the Ollama
-    daemon. It owns: ffmpeg head-silence padding, the 25s timeout race
-    against the daemon, think=False enforcement, and Pydantic
-    validation of the model's response.
+    The adapter owns: the 25s timeout race against the daemon,
+    think=False enforcement, retry-once on transient ollama.ResponseError
+    or ollama.RequestError, and translation of model exceptions into the
+    shared adapter error vocabulary.
 
     Construction takes a Clock so the timeout branch can be exercised
     against FakeClock without spending wall-clock seconds.
@@ -152,53 +116,36 @@ class OllamaAdapter:
         self._timeout_s = timeout_s
         self._model = model
 
-    async def transcribe(
-        self, audio_path: Path, lang: str = "en"
-    ) -> TranscriptionResult:
-        """Pad audio, race ollama.chat against the clock, validate output.
+    async def translate(self, text: str, source_lang: str) -> str:
+        """Race ollama.chat against the clock; return the English translation.
 
-        Raises UnsupportedLanguage if `lang` isn't yet wired
-        (checked before any preprocessing, so no ffmpeg / inference
-        side-effects fire); PaddingUnavailable / PaddingFailed if
-        ffmpeg fails; InferenceTimeout if the 25s timer wins;
-        InvalidToolCall if the response doesn't validate;
-        InferenceFailed for other Ollama errors. Returns a validated
-        TranscriptionResult on success.
+        Raises UnsupportedLanguage if `source_lang` isn't implemented;
+        InferenceTimeout if the 25s timer wins; InferenceFailed if both
+        ollama.chat attempts surface ollama.ResponseError or
+        ollama.RequestError. Returns the stripped English translation
+        on success.
         """
-        if not is_implemented(lang):
+        if not is_implemented(source_lang):
             log.warning(
                 "unsupported_language",
-                audio_path=str(audio_path),
                 model=self._model,
-                lang=lang,
+                source_lang=source_lang,
                 implemented_langs=sorted(IMPLEMENTED_LANGS),
             )
             raise UnsupportedLanguage(
-                f"lang={lang!r} is not yet implemented. "
+                f"source_lang={source_lang!r} is not yet implemented. "
                 f"Currently supported: {sorted(IMPLEMENTED_LANGS)}"
             )
 
-        base = {"audio_path": str(audio_path), "model": self._model, "lang": lang}
+        base = {
+            "model": self._model,
+            "source_lang": source_lang,
+            "text_chars": str(len(text)),
+        }
         log.info("adapter_call_start", **base, timeout_s=self._timeout_s)
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            padded_path = Path(tmp.name)
-        try:
-            src_bytes = audio_path.stat().st_size
-            self._preprocess(audio_path, padded_path, base=base)
-            log.info(
-                "padding_applied",
-                **base,
-                src_bytes=src_bytes,
-                dst_bytes=padded_path.stat().st_size,
-                pad_filter=PAD_FILTER,
-            )
-            audio_b64 = base64.b64encode(padded_path.read_bytes()).decode()
-        finally:
-            padded_path.unlink(missing_ok=True)
-
-        prompt = _build_prompt(cast(SupportedLang, lang))
-        messages = [{"role": "user", "content": prompt, "images": [audio_b64]}]
+        prompt = _build_translate_prompt(text, cast(SupportedLang, source_lang))
+        messages = [{"role": "user", "content": prompt}]
         start = self._clock.monotonic()
         try:
             response = await self._call_with_timeout(messages, base=base)
@@ -223,18 +170,7 @@ class OllamaAdapter:
                 ) from retry_err
         latency_s = self._clock.monotonic() - start
 
-        content = self._extract_content(response)
-        stripped = self._strip_json_fences(content)
-        try:
-            result = TranscriptionResult.model_validate_json(stripped)
-        except ValidationError as e:
-            log.warning(
-                "validation_failed",
-                **base,
-                raw_content_truncated=content[:TRUNCATE_CHARS],
-                validation_error_class=type(e).__name__,
-            )
-            raise InvalidToolCall(f"Gemma response failed validation: {e}") from e
+        content = self._extract_content(response).strip()
 
         load_duration_ns = getattr(response, "load_duration", None)
         load_duration_s = (
@@ -248,8 +184,9 @@ class OllamaAdapter:
             done_reason=getattr(response, "done_reason", None),
             prompt_eval_count=getattr(response, "prompt_eval_count", None),
             load_duration_s=load_duration_s,
+            output_chars=len(content),
         )
-        return result
+        return content
 
     async def _call_with_timeout(
         self, messages: list[dict[str, Any]], *, base: dict[str, str]
@@ -282,7 +219,7 @@ class OllamaAdapter:
                 except asyncio.CancelledError:
                     pass
             # Propagate raw exceptions (ollama.ResponseError /
-            # ollama.RequestError, or any other) to transcribe(), which
+            # ollama.RequestError, or any other) to translate(), which
             # owns the retry policy and InferenceFailed conversion.
             return call.result()
 
@@ -310,10 +247,10 @@ class OllamaAdapter:
     def _strip_json_fences(content: str) -> str:
         """Strip markdown code fences from Gemma's JSON output if present.
 
-        Gemma 4 E2B sometimes wraps its JSON in ```json ... ``` or bare
-        ``` ... ``` despite the prompt. Pattern lifted from
-        scripts/test_audio_smoke.py:57-65 and tightened for strict
-        pre-validation use.
+        Reserved for future structured-output paths (tool calls,
+        schema-validated multi-turn). The Day 10 translate path returns
+        plain text and does not use this helper. Pattern lifted from
+        scripts/test_audio_smoke.py:57-65.
         """
         content = content.strip()
         if content.startswith("```"):
@@ -323,56 +260,3 @@ class OllamaAdapter:
         if content.endswith("```"):
             content = content[:-3].rstrip()
         return content
-
-    def _preprocess(
-        self, src: Path, dst: Path, *, base: dict[str, str] | None = None
-    ) -> None:
-        """Pad head silence and resample to 16kHz mono WAV.
-
-        Lifted from scripts/test_audio_smoke.py:32-43; the only change
-        is replacing subprocess.run(check=True) with explicit
-        FileNotFoundError / non-zero-exit handling so we raise the named
-        adapter exceptions instead of CalledProcessError, and emit
-        structlog warnings before each raise.
-        """
-        base = base or {"audio_path": str(src), "model": self._model}
-        try:
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    str(src),
-                    "-af",
-                    PAD_FILTER,
-                    "-ar",
-                    "16000",
-                    "-ac",
-                    "1",
-                    "-sample_fmt",
-                    "s16",
-                    str(dst),
-                ],
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError as e:
-            log.warning(
-                "padding_unavailable",
-                **base,
-                error_class=type(e).__name__,
-                error_msg=str(e),
-            )
-            raise PaddingUnavailable("ffmpeg not on PATH") from e
-        if result.returncode != 0:
-            log.warning(
-                "padding_failed",
-                **base,
-                returncode=result.returncode,
-                stderr_truncated=result.stderr[:TRUNCATE_CHARS],
-            )
-            raise PaddingFailed(
-                f"ffmpeg exit={result.returncode}: {result.stderr.strip()}"
-            )

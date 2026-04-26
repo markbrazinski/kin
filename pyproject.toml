@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv",
     "pydantic",
     "structlog",
+    "faster-whisper",
 ]
 
 [project.optional-dependencies]

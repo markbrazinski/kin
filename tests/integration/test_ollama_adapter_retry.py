@@ -1,30 +1,22 @@
-"""GGML retry coverage for OllamaAdapter (Day 6 Session 2).
+"""GGML retry coverage for OllamaAdapter.translate().
 
-Closes the adapter chapter — InferenceFailed gets direct test coverage
-via monkeypatched ollama.chat raising ollama.ResponseError. Q1 of the
-Day 6 opening locked option (b): test the retry without forcing a
-real GGML crash.
-
-Three tests:
-  1. Retry succeeds on second attempt (call_count == 2, success).
-  2. Retry fails on second attempt → InferenceFailed (call_count == 2).
-  3. InferenceTimeout is NOT caught by the retry mechanism
-     (boundary test; protects against future lazy `except Exception`).
+Day 10 update: retry policy unchanged — still catches
+ollama.ResponseError / ollama.RequestError on the first call, retries
+once, raises InferenceFailed if both fail. InferenceTimeout still
+propagates without being caught by the retry.
 """
+
+from __future__ import annotations
 
 import asyncio
 import threading
-from pathlib import Path
 from typing import Any
 
 import ollama
 import pytest
 
-from integration.ollama_adapter import (
-    InferenceFailed,
-    InferenceTimeout,
-    OllamaAdapter,
-)
+from integration._errors import InferenceFailed, InferenceTimeout
+from integration.ollama_adapter import OllamaAdapter
 from tests.fakes.fake_clock import FakeClock
 
 
@@ -34,8 +26,6 @@ class _Msg:
 
 
 class _Response:
-    """Minimal duck-typed Ollama response for happy-path success."""
-
     def __init__(self, content: str) -> None:
         self.message = _Msg(content)
         self.eval_count = 10
@@ -45,10 +35,9 @@ class _Response:
 
 
 class _RetryStubClient:
-    """Sync chat() that raises ollama.ResponseError on the first N
-    calls, then returns a configured response. If `success_response`
-    is None, keeps raising forever — useful for the
-    retry-fails-on-both-attempts case.
+    """Sync chat() that raises ollama.ResponseError on the first N calls,
+    then returns a configured response. If `success_response` is None,
+    keeps raising forever.
     """
 
     def __init__(self, raise_first_n: int, success_response: Any | None) -> None:
@@ -65,52 +54,31 @@ class _RetryStubClient:
         return self._success
 
 
-_VALID_JSON = '{"transcription": "hola", "english_translation": "hi"}'
-
-
 @pytest.mark.asyncio
-async def test_retry_succeeds_on_second_attempt(tmp_path: Path) -> None:
-    """First chat() raises ollama.ResponseError; second returns valid
-    JSON. Adapter retries once, succeeds, validates, and returns the
-    TranscriptionResult. call_count must be exactly 2.
-    """
-    audio = tmp_path / "stub.wav"
-    audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
-    client = _RetryStubClient(raise_first_n=1, success_response=_Response(_VALID_JSON))
+async def test_retry_succeeds_on_second_attempt() -> None:
+    """First chat() raises; second returns a clean translation. call_count == 2."""
+    client = _RetryStubClient(raise_first_n=1, success_response=_Response("hello"))
     adapter = OllamaAdapter(client=client, timeout_s=10.0)
-    adapter._preprocess = lambda src, dst, **_kw: dst.write_bytes(src.read_bytes())  # type: ignore[method-assign]
 
-    result = await adapter.transcribe(audio)
+    result = await adapter.translate("hola", "es")
 
     assert client.call_count == 2
-    assert result.transcription == "hola"
-    assert result.english_translation == "hi"
+    assert result == "hello"
 
 
 @pytest.mark.asyncio
-async def test_retry_failure_raises_inference_failed(tmp_path: Path) -> None:
-    """Both attempts raise ollama.ResponseError. Adapter retries once,
-    second attempt also fails, InferenceFailed surfaces with the
-    retry error chained.
-    """
-    audio = tmp_path / "stub.wav"
-    audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
+async def test_retry_failure_raises_inference_failed() -> None:
     client = _RetryStubClient(raise_first_n=2, success_response=None)
     adapter = OllamaAdapter(client=client, timeout_s=10.0)
-    adapter._preprocess = lambda src, dst, **_kw: dst.write_bytes(src.read_bytes())  # type: ignore[method-assign]
 
     with pytest.raises(InferenceFailed, match=r"after retry"):
-        await adapter.transcribe(audio)
+        await adapter.translate("hola", "es")
 
     assert client.call_count == 2
 
 
 class _HangingClient:
-    """Sync chat() that blocks the asyncio.to_thread worker forever.
-    Same shape as test_ollama_adapter_timeout.py's _HangingClient.
-    """
+    """Sync chat() that blocks the asyncio.to_thread worker forever."""
 
     def __init__(self) -> None:
         self._block = threading.Event()
@@ -122,25 +90,16 @@ class _HangingClient:
 
 
 @pytest.mark.asyncio
-async def test_retry_does_not_catch_timeout(tmp_path: Path) -> None:
+async def test_retry_does_not_catch_timeout() -> None:
     """Boundary test: the retry's except clause is type-specific
     (ollama.ResponseError, ollama.RequestError). InferenceTimeout
-    must propagate cleanly without triggering retry. If a future
-    refactor changes the catch to `except Exception`, this test
-    fails.
+    must propagate cleanly without triggering retry.
     """
-    audio = tmp_path / "stub.wav"
-    audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
     clock = FakeClock()
     client = _HangingClient()
     adapter = OllamaAdapter(client=client, clock=clock, timeout_s=25.0)
-    adapter._preprocess = lambda src, dst, **_kw: dst.write_bytes(src.read_bytes())  # type: ignore[method-assign]
 
-    task = asyncio.create_task(adapter.transcribe(audio))
-    # Same two-cycle warm-up as the Session 1A timeout test:
-    # transcribe() does sync setup before reaching the timeout race;
-    # one cycle scheduling, one cycle for timer body to enqueue.
+    task = asyncio.create_task(adapter.translate("hola", "es"))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
@@ -149,8 +108,6 @@ async def test_retry_does_not_catch_timeout(tmp_path: Path) -> None:
     with pytest.raises(InferenceTimeout):
         await task
 
-    # Critical assertion: only ONE chat attempt. If the retry caught
-    # InferenceTimeout, call_count would be 2 (or higher).
     assert client.call_count == 1
 
     client._block.set()  # release orphan worker thread

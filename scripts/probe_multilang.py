@@ -1,63 +1,59 @@
-"""Multilingual transcription probe across en/es/ar/fa — Day 8 walk step.
+"""Multilingual transcription probe across en/es/ar/fa — Day 10 two-model pipeline.
 
-Empirical reality check: does Gemma 4 E2B at the adapter's locked
-options dict produce JSON that validates against TranscriptionResult,
-per language, on real on-disk audio? Three runs per language to
-surface variance the single-shot smoke probes can't see.
+Empirical reality check on the post-Whisper architecture: does
+Whisper ASR (faster-whisper medium int8 CPU) + Gemma 4 E2B
+text-only translation produce TranscriptionResult objects that pass
+Pydantic validation across all four KIN languages?
 
-Replicates the canonical ollama.chat() call pattern from
-src/integration/ollama_adapter.py locally (model, options, think=False,
-the language-aware prompt) and re-uses the adapter's private
-_preprocess() and _strip_json_fences() helpers by direct import. The
-private-method use is deliberate: this script's purpose is to observe
-the same pipeline production runs through, not to ship a parallel
-implementation. _build_prompt is module-scope in the adapter and is
-imported the same way.
+The probe drives the same `transcribe_and_translate_with_metrics`
+function the demo will use, so any drift between probe and production
+is structural (not a parallel implementation). 10-min wall-clock
+budget, 3 runs per language, continue on per-run failure to surface
+variance.
 
-Departures from existing probe house style (test_audio_smoke.py,
-farsi_retest.py, run_three_tests.py): async client (mirrors the
-adapter's async surface), structlog progress logging (no print()),
-inline raw content in the markdown (no per-run JSON spillover).
+English short-circuits the Gemma call (lang=='en' in the pipeline);
+gemma_latency_s is reported as 0.0 for English rows. RFL §1 of the
+review note reminds us to inspect EN rows separately, not just count
+overall validations.
 
-Design (locked, per Mark's spec):
-- Single ollama.chat() call per run.
-- Capture raw content AND validation outcome separately.
-- 3 runs per language, continue on failure.
-- No per-call timeout: runaway behavior is itself a finding.
-- 10-min total wall-clock budget, checked between runs.
-- No new audio sourcing; if no sample for a lang, log + skip.
-- Output: results/multilang_probe_{TS}.md with placeholder Findings.
+Whisper model load time (~47s) is logged before the budget timer
+starts, so a model-load delay does not eat into per-run budget.
+
+Output: results/multilang_probe_{TS}.md, with the metadata block + a
+per-language table (whisper_latency_s | gemma_latency_s |
+total_latency_s | detected_lang | lang_prob | validation_status |
+error | timestamp). Findings is a placeholder for the human reviewer.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import ollama
 import structlog
-from pydantic import ValidationError
+from faster_whisper import WhisperModel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from core.language_matrix import LANGUAGE_NAMES, SupportedLang  # noqa: E402
-from core.rfl_schema import TranscriptionResult  # noqa: E402
-from integration.ollama_adapter import (  # noqa: E402
-    MODEL,
-    OPTIONS,
-    OllamaAdapter,
-    PaddingFailed,
-    PaddingUnavailable,
-    _build_prompt,
+from integration._errors import AdapterError  # noqa: E402
+from integration.ollama_adapter import MODEL, OPTIONS, OllamaAdapter  # noqa: E402
+from integration.transcription_pipeline import (  # noqa: E402
+    PipelineMetrics,
+    transcribe_and_translate_with_metrics,
+)
+from integration.whisper_adapter import (  # noqa: E402
+    WHISPER_COMPUTE_TYPE,
+    WHISPER_DEVICE,
+    WHISPER_MODEL_SIZE,
+    WhisperAdapter,
 )
 
 log = structlog.get_logger("probe_multilang")
@@ -81,10 +77,12 @@ class RunRecord:
     language: SupportedLang
     audio_path: str
     run_index: int
-    latency_seconds: float | None
-    eval_count: int | None
-    done_reason: str | None
-    raw_content: str
+    whisper_latency_s: float | None
+    gemma_latency_s: float | None
+    total_latency_s: float | None
+    skipped_translation: bool
+    transcription: str
+    english_translation: str
     validation_status: str
     validation_error_detail: str
     timestamp_iso: str
@@ -109,13 +107,13 @@ def md_escape(s: str) -> str:
 
 
 async def run_one(
-    adapter: OllamaAdapter,
-    client: Any,
+    whisper: WhisperAdapter,
+    ollama_adapter: OllamaAdapter,
     lang: SupportedLang,
     audio_path: Path,
     run_index: int,
 ) -> RunRecord:
-    """One probe run. Captures latency + raw + validation independently."""
+    """One probe run. Captures whisper + gemma latencies independently."""
     log.info(
         "probe_run_start",
         lang=lang,
@@ -124,113 +122,96 @@ async def run_one(
     )
     timestamp_iso = datetime.now().isoformat()
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        padded_path = Path(tmp.name)
-
     try:
-        try:
-            adapter._preprocess(
-                audio_path,
-                padded_path,
-                base={"audio_path": str(audio_path), "model": MODEL, "lang": lang},
-            )
-        except (PaddingUnavailable, PaddingFailed) as e:
-            log.warning(
-                "probe_run_failed",
-                lang=lang,
-                run_index=run_index,
-                stage="preprocess",
-                error_class=type(e).__name__,
-            )
-            return RunRecord(
-                language=lang,
-                audio_path=str(audio_path),
-                run_index=run_index,
-                latency_seconds=None,
-                eval_count=None,
-                done_reason=None,
-                raw_content="",
-                validation_status=type(e).__name__,
-                validation_error_detail=str(e),
-                timestamp_iso=timestamp_iso,
-            )
-
-        audio_b64 = base64.b64encode(padded_path.read_bytes()).decode()
-    finally:
-        padded_path.unlink(missing_ok=True)
-
-    prompt = _build_prompt(lang)
-    messages = [{"role": "user", "content": prompt, "images": [audio_b64]}]
-
-    start = time.perf_counter()
-    try:
-        response = await client.chat(
-            model=MODEL,
-            messages=messages,
-            options=OPTIONS,
-            think=False,
+        result, metrics = await transcribe_and_translate_with_metrics(
+            audio_path, lang, whisper=whisper, ollama=ollama_adapter
         )
-    except Exception as e:
-        latency = time.perf_counter() - start
+    except AdapterError as e:
         log.warning(
             "probe_run_failed",
             lang=lang,
             run_index=run_index,
-            stage="inference",
             error_class=type(e).__name__,
-            latency_s=latency,
         )
         return RunRecord(
             language=lang,
             audio_path=str(audio_path),
             run_index=run_index,
-            latency_seconds=latency,
-            eval_count=None,
-            done_reason=None,
-            raw_content="",
+            whisper_latency_s=None,
+            gemma_latency_s=None,
+            total_latency_s=None,
+            skipped_translation=False,
+            transcription="",
+            english_translation="",
+            validation_status=type(e).__name__,
+            validation_error_detail=str(e),
+            timestamp_iso=timestamp_iso,
+        )
+    except Exception as e:
+        log.warning(
+            "probe_run_failed_unexpected",
+            lang=lang,
+            run_index=run_index,
+            error_class=type(e).__name__,
+        )
+        return RunRecord(
+            language=lang,
+            audio_path=str(audio_path),
+            run_index=run_index,
+            whisper_latency_s=None,
+            gemma_latency_s=None,
+            total_latency_s=None,
+            skipped_translation=False,
+            transcription="",
+            english_translation="",
             validation_status=type(e).__name__,
             validation_error_detail=str(e),
             timestamp_iso=timestamp_iso,
         )
 
-    latency = time.perf_counter() - start
-    raw_content = OllamaAdapter._extract_content(response)
-    eval_count = getattr(response, "eval_count", None)
-    done_reason = getattr(response, "done_reason", None)
-
-    stripped = OllamaAdapter._strip_json_fences(raw_content)
-    validation_status: str
-    validation_error_detail: str
-    try:
-        TranscriptionResult.model_validate_json(stripped)
-        validation_status = "validated"
-        validation_error_detail = ""
-    except ValidationError as e:
-        validation_status = "InvalidToolCall"
-        validation_error_detail = str(e)
-    except Exception as e:
-        validation_status = type(e).__name__
-        validation_error_detail = str(e)
-
     log.info(
         "probe_run_complete",
         lang=lang,
         run_index=run_index,
-        latency_s=latency,
-        eval_count=eval_count,
-        done_reason=done_reason,
-        validation_status=validation_status,
+        whisper_latency_s=metrics.whisper_latency_s,
+        gemma_latency_s=metrics.gemma_latency_s,
+        total_latency_s=metrics.total_latency_s,
+        skipped_translation=metrics.skipped_translation,
     )
+
+    return _record_from_result(
+        lang=lang,
+        audio_path=audio_path,
+        run_index=run_index,
+        result_transcription=result.transcription,
+        result_english=result.english_translation,
+        metrics=metrics,
+        timestamp_iso=timestamp_iso,
+    )
+
+
+def _record_from_result(
+    *,
+    lang: SupportedLang,
+    audio_path: Path,
+    run_index: int,
+    result_transcription: str,
+    result_english: str,
+    metrics: PipelineMetrics,
+    timestamp_iso: str,
+) -> RunRecord:
     return RunRecord(
         language=lang,
         audio_path=str(audio_path),
         run_index=run_index,
-        latency_seconds=latency,
-        eval_count=eval_count,
-        done_reason=done_reason,
-        raw_content=raw_content,
-        validation_status=validation_status,
-        validation_error_detail=validation_error_detail,
+        whisper_latency_s=metrics.whisper_latency_s,
+        gemma_latency_s=metrics.gemma_latency_s,
+        total_latency_s=metrics.total_latency_s,
+        skipped_translation=metrics.skipped_translation,
+        transcription=result_transcription,
+        english_translation=result_english,
+        validation_status="validated",
+        validation_error_detail="",
         timestamp_iso=timestamp_iso,
     )
 
@@ -243,6 +224,7 @@ def render_markdown(
     total_wall_seconds: float,
     completion_status: str,
     started_iso: str,
+    whisper_load_seconds: float,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# Multilingual probe — {started_iso}")
@@ -250,10 +232,15 @@ def render_markdown(
     lines.append("## Probe metadata")
     lines.append("")
     lines.append(f"- Started: `{started_iso}`")
-    lines.append(f"- Model: `{MODEL}`")
-    lines.append(f"- num_predict: `{OPTIONS['num_predict']}`")
-    lines.append(f"- Options: `{OPTIONS}`")
+    lines.append(
+        f"- Whisper: `faster-whisper:{WHISPER_MODEL_SIZE}` "
+        f"({WHISPER_DEVICE}, {WHISPER_COMPUTE_TYPE})"
+    )
+    lines.append(f"- Whisper model load: `{whisper_load_seconds:.2f}s`")
+    lines.append(f"- Gemma: `{MODEL}`")
+    lines.append(f"- Gemma options: `{OPTIONS}`")
     lines.append("- think: `False` (hardcoded; ADR-003)")
+    lines.append("- English short-circuits Gemma (`gemma_latency_s == 0.0`)")
     lines.append(
         f"- Languages attempted: {', '.join(f'`{lang}`' for lang in langs_attempted)}"
     )
@@ -265,7 +252,11 @@ def render_markdown(
             lines.append(f"    - `{sec.language}`: (no sample available)")
     lines.append(f"- Total runs planned: {total_runs_planned}")
     completed = sum(len(s.runs) for s in sections)
+    validated = sum(
+        1 for s in sections for r in s.runs if r.validation_status == "validated"
+    )
     lines.append(f"- Total runs completed: {completed}")
+    lines.append(f"- Validated runs: **{validated} / {total_runs_planned}**")
     lines.append(f"- Total wall-clock time: {total_wall_seconds:.2f}s")
     lines.append(f"- Completion status: **{completion_status}**")
     lines.append("")
@@ -284,35 +275,53 @@ def render_markdown(
         lines.append(f"Audio: `{sec.audio_path.name}`")
         lines.append("")
         if not sec.runs:
-            lines.append("_No runs completed for this language (budget exceeded "
-                         "before scheduling)._")
+            lines.append(
+                "_No runs completed for this language (budget exceeded "
+                "before scheduling)._"
+            )
             lines.append("")
             continue
 
         lines.append(
-            "| Run | Latency (s) | eval_count | done_reason | "
-            "validation_status | validation_error_detail | Timestamp |"
+            "| Run | whisper_s | gemma_s | total_s | skipped_xlate | "
+            "validation_status | error | Timestamp |"
         )
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for r in sec.runs:
-            lat = f"{r.latency_seconds:.2f}" if r.latency_seconds is not None else "—"
-            ec = str(r.eval_count) if r.eval_count is not None else "—"
-            dr = r.done_reason or "—"
+            ws = (
+                f"{r.whisper_latency_s:.2f}"
+                if r.whisper_latency_s is not None
+                else "—"
+            )
+            gs = (
+                f"{r.gemma_latency_s:.2f}"
+                if r.gemma_latency_s is not None
+                else "—"
+            )
+            ts = (
+                f"{r.total_latency_s:.2f}"
+                if r.total_latency_s is not None
+                else "—"
+            )
             err = (
                 md_escape(r.validation_error_detail)
                 if r.validation_error_detail
                 else ""
             )
             lines.append(
-                f"| {r.run_index} | {lat} | {ec} | {dr} | "
-                f"{r.validation_status} | {err} | {r.timestamp_iso} |"
+                f"| {r.run_index} | {ws} | {gs} | {ts} | "
+                f"{r.skipped_translation} | {r.validation_status} | {err} | "
+                f"{r.timestamp_iso} |"
             )
         lines.append("")
         for r in sec.runs:
-            lines.append(f"### Run {r.run_index} raw content")
+            lines.append(f"### Run {r.run_index} output")
             lines.append("")
             lines.append("```text")
-            lines.append(r.raw_content if r.raw_content else "(empty)")
+            lines.append(f"transcription:        {r.transcription or '(empty)'}")
+            lines.append(
+                f"english_translation:  {r.english_translation or '(empty)'}"
+            )
             lines.append("```")
             lines.append("")
 
@@ -332,6 +341,7 @@ def write_results(
     completion_status: str,
     started_iso: str,
     started_ts: str,
+    whisper_load_seconds: float,
 ) -> Path:
     RESULTS_DIR.mkdir(exist_ok=True)
     out_path = RESULTS_DIR / f"multilang_probe_{started_ts}.md"
@@ -342,6 +352,7 @@ def write_results(
         total_wall_seconds=total_wall_seconds,
         completion_status=completion_status,
         started_iso=started_iso,
+        whisper_load_seconds=whisper_load_seconds,
     )
     out_path.write_text(md)
     return out_path
@@ -372,6 +383,25 @@ async def main_async(args: argparse.Namespace) -> int:
     )
     started_iso = datetime.now().isoformat()
     started_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    log.info(
+        "whisper_model_loading",
+        size=WHISPER_MODEL_SIZE,
+        device=WHISPER_DEVICE,
+        compute_type=WHISPER_COMPUTE_TYPE,
+    )
+    load_t0 = time.perf_counter()
+    whisper_model = WhisperModel(
+        WHISPER_MODEL_SIZE, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE
+    )
+    whisper_load_seconds = time.perf_counter() - load_t0
+    log.info("whisper_model_ready", load_seconds=whisper_load_seconds)
+
+    whisper_adapter = WhisperAdapter(model=whisper_model)
+    # OllamaAdapter wraps a sync chat() via asyncio.to_thread; pass the sync
+    # Client (ollama.Client), not AsyncClient. Mirrors all tests' stub clients.
+    ollama_adapter = OllamaAdapter(client=ollama.Client())
+
     log.info(
         "probe_started",
         langs=langs,
@@ -380,8 +410,6 @@ async def main_async(args: argparse.Namespace) -> int:
         audio_dir=str(audio_dir),
     )
 
-    client = ollama.AsyncClient()
-    adapter = OllamaAdapter(client=ollama)
     completion_status = "complete"
     wall_start = time.perf_counter()
 
@@ -402,8 +430,8 @@ async def main_async(args: argparse.Namespace) -> int:
                     completion_status = "aborted at budget"
                     raise _BudgetExceeded()
                 record = await run_one(
-                    adapter=adapter,
-                    client=client,
+                    whisper=whisper_adapter,
+                    ollama_adapter=ollama_adapter,
                     lang=sec.language,
                     audio_path=sec.audio_path,
                     run_index=run_index,
@@ -430,6 +458,7 @@ async def main_async(args: argparse.Namespace) -> int:
             completion_status=completion_status,
             started_iso=started_iso,
             started_ts=started_ts,
+            whisper_load_seconds=whisper_load_seconds,
         )
         log.info(
             "probe_finished",
