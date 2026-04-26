@@ -10,6 +10,7 @@ dependencies = [
     "pydantic",
     "structlog",
     "faster-whisper",
+    "jellyfish",
 ]
 
 [project.optional-dependencies]
