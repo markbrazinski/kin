@@ -1,10 +1,10 @@
-"""Crisis-phrase detection — first-pass keyword classifier.
+"""Crisis-phrase detection — keyword classifier across en/es/ar/fa.
 
 Pure-logic Core module. No I/O. Runs BEFORE the adapter so a person
 in distress is routed to crisis resources rather than processed as
-intake. Multilingual keyword expansion (ES/AR/FA) and semantic
-detection via Gemma are Day 7-9; this session lands the EN keyword
-path only.
+intake. Day 10 Session 2 expansion: covers all four KIN locked
+languages via static keyword sets seeded from the original EN list.
+Semantic detection via Gemma remains a Day 11+ scope item.
 """
 
 from __future__ import annotations
@@ -13,13 +13,15 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from core.language_matrix import IMPLEMENTED_LANGS, SupportedLang
+
 
 class SafetyResult(BaseModel):
     """Result of safety classification.
 
     Schema differs from test_strategy §2's representative example
     (escalate/match_path/allow_rfl_tools); concrete shape adopted
-    here for v1, may converge as semantic detection lands Day 7-9.
+    here for v1, may converge as semantic detection lands Day 11+.
     """
 
     is_crisis: bool
@@ -28,53 +30,108 @@ class SafetyResult(BaseModel):
     crisis_resources_locale: str | None
 
 
-_EN_CRISIS_KEYWORDS: tuple[str, ...] = (
-    # Self-harm
-    "kill myself",
-    "end my life",
-    "suicide",
-    "want to die",
-    "hurt myself",
-    # Imminent harm to others
-    "going to hurt",
-    "going to kill",
-    "going to attack",
-    # Immediate-danger context (note: "emergency" intentionally
-    # excluded — over-triggers on legitimate intake speech like
-    # "I left during the emergency")
-    "immediate danger",
-)
+# Keyword sources:
+# - EN: Day 6 Session 1 (bd9e734), seed list. "emergency" intentionally
+#   excluded — over-triggers on legitimate intake speech like
+#   "I left during the emergency".
+# - ES/AR/FA: Day 10 Session 2 — translated via scripts/translate_safety_keywords.py
+#   (untracked) using the working two-model pipeline, then human-reviewed
+#   with five idiomatic corrections applied:
+#     * ES "going to hurt"   → voy a hacerle daño   (was: va a doler)
+#     * ES "going to kill"   → voy a matar          (was: ir a matar)
+#     * ES "going to attack" → voy a atacar         (was: yendo a atacar)
+#     * AR "end my life" — both اقتلني (kill me, addressed-to-other) AND
+#                          أنهي حياتي (I end my life, self-directed)
+#     * FA "going to hurt"   → می‌خواهم آسیب بزنم  (was: قرار است آسیب ببیند)
+#   Mixed-register FA (می‌خوام colloquial vs می‌خواهم formal) is intentional —
+#   covers naturalistic speech variation in displaced-person voice notes.
+_CRISIS_KEYWORDS: dict[SupportedLang, frozenset[str]] = {
+    "en": frozenset(
+        {
+            # Self-harm
+            "kill myself",
+            "end my life",
+            "suicide",
+            "want to die",
+            "hurt myself",
+            # Imminent harm to others
+            "going to hurt",
+            "going to kill",
+            "going to attack",
+            # Immediate-danger context
+            "immediate danger",
+        }
+    ),
+    "es": frozenset(
+        {
+            "me suicido",
+            "acabar mi vida",
+            "suicidio",
+            "quiero morir",
+            "hacerme daño",
+            "voy a hacerle daño",
+            "voy a matar",
+            "voy a atacar",
+            "peligro inminente",
+        }
+    ),
+    "ar": frozenset(
+        {
+            "أقتل نفسي",
+            "اقتلني",
+            "أنهي حياتي",
+            "انتحار",
+            "أريد أن أموت",
+            "أجرح نفسي",
+            "سوف يؤلم",
+            "سأقتل",
+            "سوف نهاجم",
+            "خطر وشيك",
+        }
+    ),
+    "fa": frozenset(
+        {
+            "خودم را بکشم",
+            "زندگی‌ام را تمام کن",
+            "خودکشی",
+            "می‌خوام بمیرم",
+            "خودم را آزار بده",
+            "می‌خواهم آسیب بزنم",
+            "می‌خواهم بکشم",
+            "می‌خواهم حمله کنم",
+            "خطر فوری",
+        }
+    ),
+}
 
 
 def classify(text: str, lang: str = "en") -> SafetyResult:
-    if lang == "en":
-        return _classify_english(text)
-    # TODO Day 7-9: Spanish, Arabic, Farsi keyword sets + semantic
-    # detection via Gemma. Intentionally permissive default — safer
-    # to log "not yet implemented for lang=X, proceeding" than to
-    # false-positive block intake on a Spanish speaker because the
-    # keyword list is incomplete.
-    return SafetyResult(
-        is_crisis=False,
-        matched_keywords=[],
-        suggested_action="proceed",
-        crisis_resources_locale=None,
-    )
+    """Scan `text` for known crisis keywords in `lang`.
 
+    Returns is_crisis=True with block_intake suggestion on any
+    substring match. For unimplemented languages keeps the original
+    permissive default — safer to log and proceed than to false-
+    positive block intake on a language whose keyword list isn't
+    wired up yet. Cap at 5000 chars; intake utterances are typically
+    <500 chars, longer inputs are likely corrupt or adversarial.
+    """
+    if lang not in IMPLEMENTED_LANGS:
+        return SafetyResult(
+            is_crisis=False,
+            matched_keywords=[],
+            suggested_action="proceed",
+            crisis_resources_locale=None,
+        )
 
-def _classify_english(text: str) -> SafetyResult:
-    # Cap analyzed text at 5000 chars; intake utterances are typically
-    # <500 chars. If they're longer, we likely have corrupt input or
-    # a misuse — better to scan a prefix than blow memory on
-    # adversarial input.
     haystack = text[:5000].lower()
-    matched = [kw for kw in _EN_CRISIS_KEYWORDS if kw in haystack]
+    keywords = _CRISIS_KEYWORDS[lang]  # type: ignore[index]
+    matched = sorted(kw for kw in keywords if kw in haystack)
     if matched:
         return SafetyResult(
             is_crisis=True,
             matched_keywords=matched,
             suggested_action="block_intake",
-            crisis_resources_locale="en",
+            crisis_resources_locale=lang,
         )
     return SafetyResult(
         is_crisis=False,
