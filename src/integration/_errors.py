@@ -27,3 +27,15 @@ class InferenceFailed(AdapterError):
     WhisperModel.transcribe converts directly to this class.
     InferenceTimeout is a separate path and never converts to this.
     """
+
+
+class InvalidToolCall(AdapterError):
+    """Tool-call response from Ollama failed structural validation.
+
+    Raised by OllamaAdapter.tool_call() when the model emits no
+    tool_calls, when the emitted name is not in the caller's allowed
+    tools list, or when the arguments payload is structurally malformed
+    (missing keys, non-dict arguments). Distinct from InferenceFailed
+    (transient ollama.ResponseError / RequestError after retry) and
+    InferenceTimeout (clock-bounded).
+    """

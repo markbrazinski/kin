@@ -1,6 +1,7 @@
 """Invariant tests for FakeClock — the test fake used across the suite."""
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
@@ -87,3 +88,46 @@ async def test_tick_advances_now_exactly_to_target_past_all_deadlines() -> None:
 
     assert sleeper.done()
     assert clock.monotonic() == 10.0
+
+
+def test_now_defaults_to_april_2026_and_is_tz_aware() -> None:
+    clock = FakeClock()
+    now = clock.now()
+    assert now.tzinfo is not None
+    assert now.year == 2026
+    assert now.month == 4
+    assert now.day == 29
+
+
+def test_set_now_updates_wall_clock() -> None:
+    clock = FakeClock()
+    target = datetime(2026, 5, 1, 8, 30, 0, tzinfo=timezone.utc)
+    clock.set_now(target)
+    assert clock.now() == target
+
+
+def test_set_now_rejects_naive_datetime() -> None:
+    clock = FakeClock()
+    with pytest.raises(ValueError, match="tz-aware"):
+        clock.set_now(datetime(2026, 5, 1, 8, 30, 0))
+
+
+def test_advance_now_moves_wall_clock_independently_of_monotonic() -> None:
+    clock = FakeClock(start=100.0)
+    before = clock.now()
+    clock.advance_now(60.0)
+    after = clock.now()
+    assert (after - before).total_seconds() == 60.0
+    # Monotonic untouched by advance_now.
+    assert clock.monotonic() == 100.0
+
+
+@pytest.mark.asyncio
+async def test_now_independent_of_monotonic_tick() -> None:
+    """tick() advances monotonic only; now() is decoupled."""
+    clock = FakeClock(start=0.0)
+    before = clock.now()
+    await clock.tick(30.0)
+    after = clock.now()
+    assert clock.monotonic() == 30.0
+    assert before == after

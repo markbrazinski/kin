@@ -300,13 +300,65 @@ canonical and no transliterations on either side, JW is near-zero
 correct behavior because there is no information to bridge the
 scripts.
 
-**Multi-record matching (>2 records at once).** Out of scope. The
-demo uses pairwise matching only. Multi-record clustering is a
-post-submission concern.
+**Multi-record matching (>2 records at once).** The algorithm
+primitive is pairwise. Production code reaches it via a fan-out
+trigger that calls `match_records` once per eligible candidate; see
+§9 for the runtime contract. Multi-record clustering (one match
+relating ≥3 records) is a post-submission concern.
 
 ---
 
-## 9. References
+## 9. Runtime trigger entry point
+
+The matching algorithm exposed by `match_records(a, b) → MatchResult`
+is a pure pairwise primitive. Production code reaches it via the
+runtime trigger in
+[`src/integration/transcription_pipeline.py`](../src/integration/transcription_pipeline.py)
+— specifically `_trigger_matching(new_record, *, storage)`, called
+from `ingest_audio` after a non-crisis record finishes extraction
+and before the optional `status="complete"` promotion.
+
+**Trigger contract** (Part 1 REV 4 §"Required matching trigger
+behavior"):
+
+1. Fires on new IntakeRecord creation only (inside `ingest_audio`).
+2. Produces `MatchLink` rows in `verification_status="proposed"`.
+3. Does NOT auto-confirm.
+4. Does NOT fire on read or list operations.
+5. Excludes `status="paused_for_crisis"` records from the candidate
+   pool. Partial records DO enter the pool.
+
+**Fan-out shape:** the trigger calls `match_records` once per
+eligible candidate (linear scan of `storage.list_intake_records()`).
+Matches with `is_match=True` become `MatchLink` rows with
+`match_reasoning` populated from the `MatchResult` (matched_fields,
+phonetic_score, reason). Storage auto-emits one `match_proposed`
+audit event per created link. The trigger emits a structlog
+`matching_trigger_fired` event regardless of match count so
+execution is observable even when no matches result.
+
+**IntakeRecord ↔ RFLRecord bridge:** `_to_rfl_record(intake)` maps
+the flat storage shape (Part 1 REV 4 schema) to the nested matching
+domain shape (this document). Storage owns persistence; matching
+owns the algorithm; the bridge is an orchestration concern that
+keeps both unchanged. ADR-004 records the placement rationale.
+
+**Concurrency:** none. Single-writer assumption inherited from
+`storage_adapter` — the trigger reads + writes JSONL in the same
+async task as `ingest_audio`. Demo scale (≤10 records) keeps the
+linear-scan candidate filter cheap; production scale would want an
+index.
+
+**Auditability:** every trigger invocation produces a
+`matching_trigger_fired` structlog event (`new_record_id`,
+`candidate_count`, `match_count`); every match produces a
+`match_proposed` persisted audit event. The two layers complement
+each other — the structlog stream proves the trigger ran; the
+persisted events prove what it produced.
+
+---
+
+## 10. References
 
 - [PROJECT_PLAN.md](../PROJECT_PLAN.md) §3 (architecture lock —
   Core has zero I/O), §6.4 (matching layer scope and no-LLM lock),

@@ -33,7 +33,13 @@ from core.language_matrix import (
     SupportedLang,
     is_implemented,
 )
-from integration._errors import AdapterError, InferenceFailed, InferenceTimeout
+from core.tool_calling import ToolCallResult
+from integration._errors import (
+    AdapterError,
+    InferenceFailed,
+    InferenceTimeout,
+    InvalidToolCall,
+)
 from integration.system_clock import SYSTEM_CLOCK
 
 __all__ = [
@@ -72,14 +78,6 @@ def _build_translate_prompt(text: str, source_lang: SupportedLang) -> str:
         f"commentary, no quotation marks, and no explanation.\n\n"
         f"{lang_name} text: {text}"
     )
-
-
-class InvalidToolCall(AdapterError):
-    """Reserved for future structured-output paths (tool calls, schema validation).
-
-    Not raised by the current text-only translate path. Kept defined so
-    safety-rules and future RFL-reasoning code can import a stable name.
-    """
 
 
 class UnsupportedLanguage(AdapterError):
@@ -188,23 +186,164 @@ class OllamaAdapter:
         )
         return content
 
+    async def tool_call(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ToolCallResult:
+        """Race ollama.chat (with tools=) against the clock; return a ToolCallResult.
+
+        Mirrors translate() shape: Clock-injected 25s timeout race,
+        retry-once on transient ollama.ResponseError / RequestError,
+        think=False (ADR-003). Returns the raw arguments dict —
+        caller validates against any tool-specific Pydantic model.
+
+        Raises:
+          InvalidToolCall — model emitted no tool_calls; or returned
+            tool name not in `tools`; or tool_call structure malformed
+            (missing function/name/arguments) or arguments not a dict.
+          InferenceTimeout — 25s clock fired before the daemon returned.
+          InferenceFailed — both attempts surfaced ollama.ResponseError
+            or ollama.RequestError.
+        """
+        base = {
+            "model": self._model,
+            "tool_count": str(len(tools)),
+            "message_count": str(len(messages)),
+        }
+        log.info("tool_call_invoked", **base, timeout_s=self._timeout_s)
+
+        start = self._clock.monotonic()
+        try:
+            response = await self._call_with_timeout(
+                messages, base=base, tools=tools
+            )
+        except (ollama.ResponseError, ollama.RequestError) as first_err:
+            log.warning(
+                "ggml_retry_attempted",
+                **base,
+                error_class=type(first_err).__name__,
+                error_msg_truncated=str(first_err)[:TRUNCATE_CHARS],
+            )
+            try:
+                response = await self._call_with_timeout(
+                    messages, base=base, tools=tools
+                )
+            except (ollama.ResponseError, ollama.RequestError) as retry_err:
+                log.error(
+                    "inference_failed_after_retry",
+                    **base,
+                    error_class=type(retry_err).__name__,
+                    error_msg_truncated=str(retry_err)[:TRUNCATE_CHARS],
+                )
+                raise InferenceFailed(
+                    f"Ollama tool_call failed after retry: {retry_err}"
+                ) from retry_err
+        latency_s = self._clock.monotonic() - start
+
+        result = self._parse_tool_call(response, tools=tools, base=base)
+
+        log.info(
+            "tool_call_returned",
+            **base,
+            latency_s=latency_s,
+            tool_name=result.name,
+            eval_count=getattr(response, "eval_count", None),
+            done_reason=getattr(response, "done_reason", None),
+            prompt_eval_count=getattr(response, "prompt_eval_count", None),
+        )
+        return result
+
+    def _parse_tool_call(
+        self,
+        response: Any,
+        *,
+        tools: list[dict[str, Any]],
+        base: dict[str, str],
+    ) -> ToolCallResult:
+        """Pull a single ToolCallResult off a raw SDK response.
+
+        Wire format (Apr 28 hello-world + Apr 29 multilang sweep):
+        response.message.tool_calls is list | None. Each item exposes
+        .function.name (str) and .function.arguments (already-parsed
+        dict, NOT a JSON string).
+        """
+        # Normalize message access for both object-shaped and dict-shaped
+        # responses (mirrors _extract_content).
+        if hasattr(response, "message"):
+            message = response.message
+            tool_calls = getattr(message, "tool_calls", None)
+        else:
+            message = response.get("message", {})
+            tool_calls = (
+                message.get("tool_calls") if isinstance(message, dict) else None
+            )
+
+        if not tool_calls:
+            log.warning("tool_call_no_tools_emitted", **base)
+            raise InvalidToolCall("Model emitted no tool calls")
+
+        tc = tool_calls[0]
+
+        # Pull function/name/arguments off either object or dict shapes.
+        if isinstance(tc, dict):
+            fn = tc.get("function")
+        else:
+            fn = getattr(tc, "function", None)
+        if fn is None:
+            raise InvalidToolCall("Malformed tool_call: missing function field")
+
+        if isinstance(fn, dict):
+            name = fn.get("name")
+            arguments = fn.get("arguments")
+        else:
+            name = getattr(fn, "name", None)
+            arguments = getattr(fn, "arguments", None)
+
+        if not isinstance(name, str):
+            raise InvalidToolCall(
+                f"Malformed tool_call: name is not a string ({type(name).__name__})"
+            )
+
+        allowed = {t["function"]["name"] for t in tools}
+        if name not in allowed:
+            raise InvalidToolCall(
+                f"Tool name {name!r} not in allowed set {sorted(allowed)}"
+            )
+
+        if not isinstance(arguments, dict):
+            raise InvalidToolCall(
+                f"Tool arguments not a dict ({type(arguments).__name__})"
+            )
+
+        return ToolCallResult(name=name, arguments=arguments)
+
     async def _call_with_timeout(
-        self, messages: list[dict[str, Any]], *, base: dict[str, str]
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        base: dict[str, str],
+        tools: list[dict[str, Any]] | None = None,
     ) -> Any:
         """Race ollama.chat against self._clock.sleep(timeout_s).
 
         think=False is hardcoded here, NOT a constructor argument. ADR-003
-        records the lock; do not parameterize.
+        records the lock; do not parameterize. Optional `tools` is
+        passed through to the SDK only when non-None — translate path
+        omits it entirely so the wire payload is byte-identical to
+        pre-S3 behavior.
         """
         start = self._clock.monotonic()
+        chat_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "options": OPTIONS,
+            "think": False,
+        }
+        if tools is not None:
+            chat_kwargs["tools"] = tools
         call = asyncio.create_task(
-            asyncio.to_thread(
-                self._client.chat,
-                model=self._model,
-                messages=messages,
-                options=OPTIONS,
-                think=False,
-            )
+            asyncio.to_thread(self._client.chat, **chat_kwargs)
         )
         timer = asyncio.create_task(self._clock.sleep(self._timeout_s))
         done, pending = await asyncio.wait(

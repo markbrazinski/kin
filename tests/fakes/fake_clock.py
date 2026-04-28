@@ -2,7 +2,11 @@
 
 import asyncio
 import heapq
+from datetime import datetime, timedelta, timezone
 from itertools import count
+
+
+_DEFAULT_NOW = datetime(2026, 4, 29, 12, 0, 0, tzinfo=timezone.utc)
 
 
 class FakeClock:
@@ -12,15 +16,37 @@ class FakeClock:
     coroutine awaiting `clock.sleep(x)` resumes when accumulated ticks
     reach x. Zero wall-clock time elapses; the adapter 25s timeout
     test runs in ~5ms instead of 25 seconds.
+
+    Wall-clock now() is independent of monotonic ticks: storage tests
+    that need distinct timestamps across writes call advance_now() or
+    set_now() between operations. Default start: 2026-04-29T12:00:00Z.
     """
 
-    def __init__(self, start: float = 0.0) -> None:
+    def __init__(
+        self,
+        start: float = 0.0,
+        start_now: datetime = _DEFAULT_NOW,
+    ) -> None:
         self._now = start
+        self._now_wall = start_now
         self._queue: list[tuple[float, int, asyncio.Future[None]]] = []
         self._seq = count()
 
     def monotonic(self) -> float:
         return self._now
+
+    def now(self) -> datetime:
+        return self._now_wall
+
+    def set_now(self, dt: datetime) -> None:
+        """Set wall-clock time explicitly. Must be tz-aware."""
+        if dt.tzinfo is None:
+            raise ValueError("FakeClock.set_now requires tz-aware datetime")
+        self._now_wall = dt
+
+    def advance_now(self, seconds: float) -> None:
+        """Advance wall-clock time by `seconds` (independent of monotonic)."""
+        self._now_wall = self._now_wall + timedelta(seconds=seconds)
 
     async def sleep(self, seconds: float) -> None:
         if seconds <= 0:

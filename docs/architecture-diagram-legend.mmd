@@ -1,0 +1,55 @@
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}, 'themeVariables': {'fontFamily': 'Helvetica, Arial, sans-serif'}}}%%
+flowchart LR
+    subgraph LEG["Legend"]
+        direction TB
+
+        subgraph NODES["Node colors"]
+            direction LR
+            L_UI["UI layer"]:::ui
+            L_INT["Integration layer"]:::int
+            L_CORE["Core layer (pure)"]:::core
+            L_EXT["External — NOT part of KIN"]:::external
+            L_STUB["Stubbed / not implemented"]:::stub
+            L_DEF["Deferred"]:::deferred
+            L_CI["Tooling / CI"]:::ci
+            L_ENTRY([User entry point]):::entrypoint
+        end
+
+        subgraph EDGES["Edge styles"]
+            direction LR
+            E1A[" "]:::invisible ==>|"runtime entry flow"| E1B[" "]:::invisible
+            E2A[" "]:::invisible -->|"runtime call · import · implements"| E2B[" "]:::invisible
+            E3A[" "]:::invisible -.->|"external · stub · CI"| E3B[" "]:::invisible
+        end
+
+        subgraph BADGES["Badge meanings"]
+            direction LR
+            B_STUB["[STUB]<br/>code exists, no real backend"]:::stub
+            B_DEF["[DEFERRED]<br/>not scoped for hackathon"]:::deferred
+            B_PII["🔒 PII boundary<br/>caseworker data lives here"]:::int
+        end
+
+        NODES ~~~ EDGES ~~~ BADGES
+    end
+
+    %% ============================================================
+    %% STYLING — copied verbatim from architecture-diagram.mmd
+    %% so legend colors match the main diagram exactly.
+    %% ============================================================
+    classDef ui fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d2a4a
+    classDef int fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#3a1f00
+    classDef core fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b3a1f
+    classDef external fill:#f3e5f5,stroke:#6a1b9a,stroke-width:1.5px,stroke-dasharray:5 3,color:#2c1135
+    classDef stub fill:#ffebee,stroke:#c62828,stroke-width:1.5px,stroke-dasharray:5 3,color:#3a0d0d
+    classDef deferred fill:#eceff1,stroke:#90a4ae,stroke-width:1px,stroke-dasharray:3 3,color:#546e7a
+    classDef ci fill:#f5f5f5,stroke:#616161,stroke-width:1px,color:#212121
+    classDef entrypoint fill:#fffde7,stroke:#f57f17,stroke-width:2px,color:#3a2c00
+
+    %% Invisible placeholder nodes for the EDGES subgraph — only the
+    %% arrow itself should be visible.
+    classDef invisible fill:#ffffff00,stroke:#ffffff00,color:#ffffff00
+
+    style LEG fill:#ffffff,stroke:#424242,stroke-width:1px
+    style NODES fill:#fafafa,stroke:#bdbdbd,stroke-width:1px
+    style EDGES fill:#fafafa,stroke:#bdbdbd,stroke-width:1px
+    style BADGES fill:#fafafa,stroke:#bdbdbd,stroke-width:1px

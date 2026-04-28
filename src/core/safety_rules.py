@@ -1,10 +1,12 @@
-"""Crisis-phrase detection — keyword classifier across en/es/ar/fa.
+"""Crisis-phrase detection — keyword classifier across the supported language set.
 
 Pure-logic Core module. No I/O. Runs BEFORE the adapter so a person
 in distress is routed to crisis resources rather than processed as
-intake. Day 10 Session 2 expansion: covers all four KIN locked
-languages via static keyword sets seeded from the original EN list.
-Semantic detection via Gemma remains a Day 11+ scope item.
+intake. Day 10 Session 2 expanded coverage from EN to all four locked
+KIN languages (en/es/ar/fa). Day 10 Session 5 adds fr/uk as
+validated-and-claimed coverage for the Devpost Digital Equity &
+Inclusivity prize. Semantic detection via Gemma remains a Day 11+
+scope item.
 """
 
 from __future__ import annotations
@@ -45,6 +47,21 @@ class SafetyResult(BaseModel):
 #     * FA "going to hurt"   → می‌خواهم آسیب بزنم  (was: قرار است آسیب ببیند)
 #   Mixed-register FA (می‌خوام colloquial vs می‌خواهم formal) is intentional —
 #   covers naturalistic speech variation in displaced-person voice notes.
+# - FR/UK: Day 10 Session 5 — translated via scripts/expand_languages.py
+#   (untracked) using the same two-model pipeline. Human review applied
+#   six corrections to FR (first-person register consistency with ES) and
+#   one to UK (verb-of-motion fix):
+#     * FR "end my life"     → mettre fin à ma vie    (was: tuer)
+#     * FR "want to die"     → je veux mourir         (was: vouloir mourir)
+#     * FR "going to hurt"   → je vais faire mal      (was: aller faire mal)
+#     * FR "going to kill"   → je vais tuer           (was: aller tuer)
+#     * FR "going to attack" → je vais attaquer       (was: aller attaquer)
+#     * UK "going to attack" → збираюся атакувати     (was: їду атакувати,
+#                                                      "I am riding to attack")
+#   Six expansion candidates (sw/am/so/ps/bn/ti) dropped on defensibility
+#   grounds — see results/language_expansion_baseline_20260427_003403.md.
+#   The Bengali drop in particular surfaces a Whisper-medium failure mode:
+#   80-105s degenerate-decoder loops on bn audio across 4 clips.
 _CRISIS_KEYWORDS: dict[SupportedLang, frozenset[str]] = {
     "en": frozenset(
         {
@@ -100,6 +117,32 @@ _CRISIS_KEYWORDS: dict[SupportedLang, frozenset[str]] = {
             "می‌خواهم بکشم",
             "می‌خواهم حمله کنم",
             "خطر فوری",
+        }
+    ),
+    "fr": frozenset(
+        {
+            "me suicider",
+            "mettre fin à ma vie",
+            "suicide",
+            "je veux mourir",
+            "me faire mal",
+            "je vais faire mal",
+            "je vais tuer",
+            "je vais attaquer",
+            "danger immédiat",
+        }
+    ),
+    "uk": frozenset(
+        {
+            "вбити себе",
+            "закінчити моє життя",
+            "самогубство",
+            "хочу померти",
+            "зашкоди собі",
+            "буде боляче",
+            "йти вбивати",
+            "збираюся атакувати",
+            "небезпека негайна",
         }
     ),
 }

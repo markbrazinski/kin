@@ -1,6 +1,7 @@
 """Invariant tests for SystemClock — real Clock adapter over stdlib."""
 
 import time
+from datetime import datetime
 
 import pytest
 
@@ -16,6 +17,16 @@ def test_system_clock_satisfies_clock_protocol() -> None:
 def test_monotonic_does_not_go_backward() -> None:
     first = SYSTEM_CLOCK.monotonic()
     second = SYSTEM_CLOCK.monotonic()
+    assert second >= first
+
+
+def test_now_returns_tz_aware_utc_and_advances() -> None:
+    first = SYSTEM_CLOCK.now()
+    second = SYSTEM_CLOCK.now()
+    assert isinstance(first, datetime)
+    assert first.tzinfo is not None
+    assert first.utcoffset() is not None
+    assert first.utcoffset().total_seconds() == 0
     assert second >= first
 
 

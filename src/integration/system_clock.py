@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from datetime import datetime, timezone
 
 from core.clock import Clock
 
@@ -13,11 +14,14 @@ class SystemClock:
     timeout needs a clock that never goes backward when wall-clock
     changes (NTP, DST, user retime). asyncio.sleep is the async-aware
     pause for adapters that race sleeps against inference tasks via
-    asyncio.wait.
+    asyncio.wait. now() returns wall-clock UTC for storage timestamps.
     """
 
     def monotonic(self) -> float:
         return time.monotonic()
+
+    def now(self) -> datetime:
+        return datetime.now(timezone.utc)
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)

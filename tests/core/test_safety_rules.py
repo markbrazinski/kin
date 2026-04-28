@@ -1,8 +1,9 @@
-"""Crisis keyword classifier — covers all four KIN locked languages.
+"""Crisis keyword classifier — covers the supported language set.
 
 Original three EN tests stay verbatim (regression guard). Day 10
-Session 2 adds positive-detection coverage for ES/AR/FA plus a
-non-English negative case.
+Session 2 added positive-detection coverage for ES/AR/FA plus a
+non-English negative case. Day 10 Session 5 extends with FR/UK
+positive cases for the expansion survivors.
 """
 
 from core.safety_rules import SafetyResult, classify
@@ -66,3 +67,21 @@ def test_classify_normal_es_proceeds() -> None:
     assert result.suggested_action == "proceed"
     assert result.matched_keywords == []
     assert result.crisis_resources_locale is None
+
+
+def test_classify_crisis_fr_detects() -> None:
+    """French utterance containing an approved FR crisis keyword."""
+    result = classify("Je n'en peux plus, je veux mourir.", lang="fr")
+    assert result.is_crisis is True
+    assert result.suggested_action == "block_intake"
+    assert "je veux mourir" in result.matched_keywords
+    assert result.crisis_resources_locale == "fr"
+
+
+def test_classify_crisis_uk_detects() -> None:
+    """Ukrainian utterance containing an approved UK crisis keyword."""
+    result = classify("Я більше не витримую, хочу померти.", lang="uk")
+    assert result.is_crisis is True
+    assert result.suggested_action == "block_intake"
+    assert "хочу померти" in result.matched_keywords
+    assert result.crisis_resources_locale == "uk"

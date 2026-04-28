@@ -1,0 +1,161 @@
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}, 'themeVariables': {'fontFamily': 'Helvetica, Arial, sans-serif'}}}%%
+flowchart LR
+    %% ============================================================
+    %% ENTRY POINTS
+    %% ============================================================
+    subgraph ENTRY["User entry points"]
+        direction TB
+        USER_INTAKE([👤 Aid worker<br/>intake session]):::entrypoint
+        USER_CW([👤 Caseworker<br/>review session]):::entrypoint
+        USER_INTAKE ~~~ USER_CW
+    end
+
+    %% ============================================================
+    %% UI LAYER
+    %% ============================================================
+    subgraph UI["UI Layer — src/ui/"]
+        direction TB
+        WEB["React + Vite + TS web app<br/>src/ui/web/"]:::ui
+        FAPI["FastAPI server<br/>src/ui/server/<br/>127.0.0.1 only · SSE"]:::ui
+        TERM["Terminal harness<br/>src/ui/terminal_demo.py<br/>(dev / tests)"]:::ui
+        WEB ~~~ FAPI ~~~ TERM
+    end
+
+    %% ============================================================
+    %% INTEGRATION LAYER
+    %% ============================================================
+    subgraph INT["Integration Layer — src/integration/"]
+        direction TB
+        PIPE["transcription_pipeline.py<br/><br/>orchestrates Whisper → Gemma"]:::int
+        WHADAPT["whisper_adapter.py<br/>faster-whisper medium int8<br/>ffmpeg head-silence pad<br/>Clock-injected 25s timeout"]:::int
+        OLADAPT["ollama_adapter.py<br/>Gemma 4 E2B · think=False<br/>text-only chat · GGML retry<br/>Clock-injected 25s timeout"]:::int
+        SYSCLK["system_clock.py<br/>Clock Protocol impl"]:::int
+
+        subgraph PII["🔒 PII boundary — caseworker data lives here"]
+            direction TB
+            STORE["storage_adapter.py<br/>JSONL local queue"]:::int
+            SYNC["sync_adapter.py<br/>RFL-shaped JSON export<br/>[STUB — not implemented]"]:::stub
+            STORE ~~~ SYNC
+        end
+        PIPE ~~~ WHADAPT ~~~ OLADAPT ~~~ SYSCLK ~~~ PII
+    end
+
+    %% ============================================================
+    %% CORE LAYER
+    %% ============================================================
+    subgraph CORE["Core Layer — src/core/ · pure logic, zero I/O"]
+        direction TB
+
+        subgraph SCHEMAS["Schemas (Pydantic)"]
+            direction TB
+            RFL["rfl_schema.py · RFLRecord<br/>Name · Age · LastSeen · Guardian"]:::core
+            TR["TranscriptionResult<br/>(pipeline output type,<br/>NOT nested under RFLRecord)"]:::core
+            RFL ~~~ TR
+        end
+
+        SAFETY["safety_rules.py<br/>classify(text, lang)<br/>en · es · ar · fa · fr · uk"]:::core
+        LANGMTX["language_matrix.py<br/>SupportedLang · IMPLEMENTED_LANGS"]:::core
+        MATCH["matching.py<br/>Jaro-Winkler ≥0.85 gate<br/>composite ≥0.70 threshold<br/>NO LLM in path"]:::core
+        CLOCK["clock.py<br/>Clock Protocol"]:::core
+        SCORING["scoring.py<br/>[DEFERRED]"]:::deferred
+
+        SCHEMAS ~~~ SAFETY ~~~ LANGMTX ~~~ MATCH ~~~ CLOCK ~~~ SCORING
+    end
+
+    %% ============================================================
+    %% INTEGRATION'S EXTERNALS — tools KIN drives
+    %% ============================================================
+    subgraph EXT_INT["External tools driven by Integration"]
+        direction TB
+        OLLAMA["Ollama daemon ≥0.21.0<br/>localhost:11434"]:::external
+        FWHISPER["faster-whisper<br/>(in-process library)"]:::external
+        FFMPEG["ffmpeg<br/>(subprocess)"]:::external
+        FS["local filesystem<br/>JSONL · audit log"]:::external
+        OLLAMA ~~~ FWHISPER ~~~ FFMPEG ~~~ FS
+    end
+
+    %% ============================================================
+    %% CASEWORKER'S EXTERNAL — separate process the user launches
+    %% ============================================================
+    CCIDE["Claude Code IDE<br/>(Anthropic, separate process)<br/>External — NOT part of KIN"]:::external
+
+    %% ============================================================
+    %% TOOLING / CI (not runtime)
+    %% ============================================================
+    subgraph CI["Tooling / CI — not part of runtime"]
+        direction TB
+        LBT["tests/test_layer_boundaries.py<br/><br/>AST scanner: rejects<br/>Core→Integration, Core→UI,<br/>and Integration→UI imports"]:::ci
+        FAKES["tests/fakes/fake_clock.py<br/><br/>FakeClock — implements<br/>Clock Protocol"]:::ci
+        LBT ~~~ FAKES
+    end
+
+    %% ============================================================
+    %% ENTRY EDGES (thicker, runtime data flow)
+    %% ============================================================
+    USER_INTAKE ==>|opens| WEB
+    USER_INTAKE ==>|opens dev mode| TERM
+    WEB ==>|opens SSE| FAPI
+    FAPI ==>|uses| PIPE
+    TERM ==>|uses| PIPE
+
+    USER_CW -.->|launches| CCIDE
+    CCIDE -.->|Anthropic-compatible API<br/>read-only review| OLLAMA
+
+    %% ============================================================
+    %% INTEGRATION → INTEGRATION
+    %% ============================================================
+    PIPE -->|uses| WHADAPT
+    PIPE -->|uses| OLADAPT
+    WHADAPT -->|uses| SYSCLK
+    OLADAPT -->|uses| SYSCLK
+
+    %% ============================================================
+    %% INTEGRATION → CORE (allowed direction)
+    %% ============================================================
+    PIPE -->|uses| SAFETY
+    PIPE -->|uses| MATCH
+    PIPE -->|imports| TR
+    WHADAPT -->|imports| LANGMTX
+    OLADAPT -->|imports| LANGMTX
+    OLADAPT -->|imports| RFL
+    SYSCLK -->|implements| CLOCK
+    STORE -->|imports| RFL
+    SYNC -->|imports| RFL
+
+    %% ============================================================
+    %% UI → CORE (allowed direction)
+    %% ============================================================
+    FAPI -->|imports| RFL
+
+    %% ============================================================
+    %% INTEGRATION → EXTERNAL
+    %% ============================================================
+    WHADAPT -.->|process call| FWHISPER
+    WHADAPT -.->|subprocess| FFMPEG
+    OLADAPT -.->|HTTP localhost:11434| OLLAMA
+    OLADAPT -.->|subprocess| FFMPEG
+    STORE -.->|writes| FS
+    SYNC -.->|would write| FS
+
+    %% ============================================================
+    %% CI / TOOLING
+    %% ============================================================
+    FAKES -.->|implements| CLOCK
+    LBT -.->|scans| CORE
+
+    %% ============================================================
+    %% STYLING
+    %% ============================================================
+    classDef ui fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d2a4a
+    classDef int fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#3a1f00
+    classDef core fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b3a1f
+    classDef external fill:#f3e5f5,stroke:#6a1b9a,stroke-width:1.5px,stroke-dasharray:5 3,color:#2c1135
+    classDef stub fill:#ffebee,stroke:#c62828,stroke-width:1.5px,stroke-dasharray:5 3,color:#3a0d0d
+    classDef deferred fill:#eceff1,stroke:#90a4ae,stroke-width:1px,stroke-dasharray:3 3,color:#546e7a
+    classDef ci fill:#f5f5f5,stroke:#616161,stroke-width:1px,color:#212121
+    classDef entrypoint fill:#fffde7,stroke:#f57f17,stroke-width:2px,color:#3a2c00
+
+    style PII stroke:#5d4037,stroke-width:2px,stroke-dasharray:3 3,fill:#fff8e1
+    style EXT_INT stroke:#6a1b9a,stroke-width:1.5px,stroke-dasharray:5 3,fill:#faf4fc
+    style CI stroke:#616161,stroke-width:1px,stroke-dasharray:2 2,fill:#fafafa
+    style ENTRY stroke:#9e9e9e,stroke-width:1px,stroke-dasharray:3 3,fill:#ffffff00

@@ -11,6 +11,9 @@ dependencies = [
     "structlog",
     "faster-whisper",
     "jellyfish",
+    "fastapi",
+    "uvicorn[standard]",
+    "sse-starlette",
 ]
 
 [project.optional-dependencies]
@@ -18,10 +21,13 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
+    "httpx",
+    "httpx-sse",
 ]
 probes = [
     "soundfile",
-    "datasets",
+    "datasets<4",
+    "librosa",
 ]
 
 [build-system]
@@ -42,5 +48,8 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q"
+addopts = "-q -m 'not smoke'"
 asyncio_mode = "strict"
+markers = [
+    "smoke: real-models end-to-end test; opt-in via `pytest -m smoke`",
+]
