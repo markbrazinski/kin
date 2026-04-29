@@ -25,21 +25,26 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
         "name": "extract_intake_fields",
         "description": (
             "Extract intake fields about a missing person from the speaker's "
-            "statement."
+            "statement. Each turn of audio may carry only some fields; emit "
+            "null (not an empty string, not a guess) for any field the "
+            "speaker did not explicitly state in this utterance."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "full_name": {
-                    "type": "string",
-                    "description": "Full name of the missing person.",
+                    "type": ["string", "null"],
+                    "description": (
+                        "Full name of the missing person; null if not stated "
+                        "in this utterance."
+                    ),
                 },
                 "relationship": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "description": (
                         "Speaker's relationship to the missing person "
                         "(e.g., 'son', 'daughter', 'hijo', 'hija', "
-                        "'ابن', 'پسر')."
+                        "'ابن', 'پسر'); null if not stated."
                     ),
                 },
                 "age": {
@@ -48,8 +53,39 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
                         "Age of the missing person if stated; null if not stated."
                     ),
                 },
+                "last_seen_location": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Where the speaker last saw the missing person "
+                        "(e.g., 'Tapachula bus terminal', 'border with "
+                        "Colombia', 'el cruce de la frontera'); null if not "
+                        "stated. Preserve the speaker's source language."
+                    ),
+                },
+                "last_seen_date": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "When the speaker last saw the missing person, as "
+                        "stated (e.g., 'two weeks ago', 'hace dos semanas', "
+                        "'last Tuesday'); null if not stated. Preserve the "
+                        "speaker's phrasing — do not normalize to a date."
+                    ),
+                },
+                "distinguishing_features": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Any distinguishing physical features the speaker "
+                        "mentions (scars, marks, what they were wearing, "
+                        "approximate height, hair color, etc.); null if not "
+                        "stated. Preserve the speaker's source language."
+                    ),
+                },
             },
-            "required": ["full_name", "relationship"],
+            # Nothing required: progressive extend turns may carry only a
+            # subset of fields. Storage's no-op detection handles unchanged
+            # values; the pipeline's empty-filter on extend drops None /
+            # empty so existing data isn't clobbered.
+            "required": [],
         },
     },
 }
@@ -69,6 +105,9 @@ class ExtractIntakeFieldsArgs(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    full_name: str
-    relationship: str
+    full_name: str | None = None
+    relationship: str | None = None
     age: int | None = None
+    last_seen_location: str | None = None
+    last_seen_date: str | None = None
+    distinguishing_features: str | None = None

@@ -28,8 +28,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import UUID
 
 import structlog
+from pydantic import ValidationError
 
 from core import safety_rules
 from core.matching import match_records
@@ -43,6 +45,11 @@ from core.rfl_schema import (
 )
 from core.storage_schemas import IntakeRecord, MatchLink
 from core.tool_calling import ToolCallResult
+from integration._errors import InferenceFailed, InferenceTimeout, InvalidToolCall
+from integration.escalate_crisis_tool import (
+    ESCALATE_CRISIS_TOOL,
+    EscalateCrisisArgs,
+)
 from integration.extraction_tools import (
     EXTRACT_INTAKE_FIELDS_TOOL,
     ExtractIntakeFieldsArgs,
@@ -109,6 +116,19 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "person, call extract_intake_fields with the fields the user "
     "stated. Do not invent fields the user did not state — pass null "
     "for unknown values."
+)
+
+_CRISIS_SYSTEM_PROMPT = (
+    "You are a humanitarian intake assistant. The system has already "
+    "classified the user's message as a crisis using a deterministic "
+    "keyword classifier. Do NOT re-evaluate whether this is a crisis — "
+    "that decision has been made. Your only job is to call "
+    "escalate_crisis with: (1) referral_organization — the name of an "
+    "appropriate humanitarian referral organization in the speaker's "
+    "language; (2) locale_aware_message — a brief calm message in the "
+    "speaker's language directing them to immediate help. Do not assert "
+    "facts about the person's situation. Do not promise outcomes. Two "
+    "to three sentences for the message."
 )
 
 
@@ -198,86 +218,120 @@ async def ingest_audio(
     whisper: _Transcriber,
     ollama: _OllamaPort,
     storage: StorageAdapter,
+    intake_id: UUID | None = None,
 ) -> IntakeRecord:
     """End-to-end ingest: audio → IntakeRecord with audit trail.
 
-    Runs Whisper transcription + Gemma translation (via
-    transcribe_and_translate), classifies the SOURCE-language text for
-    crisis keywords, and either:
-      - on crisis: persists a paused_for_crisis record with referral
-        info, skips extraction + matching trigger, returns.
-      - on non-crisis: runs Gemma tool-calling extraction on the
-        source-language text (matches Apr 28/29 probe conditions),
-        persists a partial record, then updates with extracted fields
-        (one field_extracted audit event per non-empty field).
+    intake_id=None (S4 default): create a new partial record with
+    extracted fields. intake_id=X (S5 extend path): read record X,
+    merge new turn's extracted fields, fire matching re-trigger if
+    identity-bearing fields changed. The crisis path is create-only;
+    extending into a crisis turn raises ValueError.
 
     Failure mode: any upstream exception (Whisper PaddingFailed,
     Ollama InferenceTimeout, etc.) propagates unchanged. No
-    defensive IntakeRecord is created on partial failure. Failed-
-    intake recovery is a separate brief.
+    defensive IntakeRecord is created on partial failure.
 
-    Audit-event emission per Part 1 REV 4 / Part 2 REV 3 mapping. All
-    field_extracted events fire at once after a single tool_call (one
-    bulk update). Beat 5 turn-by-turn field appearance is achieved
-    downstream (SSE brief): either three sequential audio files or
-    staggered rendering. NOT an orchestration concern.
-
-    S5 will wire matching trigger between the post-update step and
-    the optional final status="complete" update.
+    Audit-event emission per Part 1 REV 4 / Part 2 REV 3 mapping.
+    Each turn's update_intake_record emits one field_extracted event
+    per changed field; storage's no-op detection skips unchanged
+    fields, so a turn-2 audio that re-states the name doesn't
+    re-fire field_extracted for it.
     """
     log.info(
         "ingest_audio_start",
         audio_path=str(audio_path),
         lang=lang,
         source_device_id=source_device_id,
+        intake_id=str(intake_id) if intake_id else None,
     )
 
     # Stage 1: Whisper + (optional) Gemma translate.
-    # Exceptions propagate unchanged (Q2 locked).
     result = await transcribe_and_translate(
         audio_path, lang, whisper=whisper, ollama=ollama
     )
 
-    # Stage 2: crisis classification on SOURCE text (Q5 locked).
-    # safety_rules' keyword lists are language-keyed; English keywords
-    # won't match Arabic/Persian crisis utterances.
+    # Stage 2: crisis classification on SOURCE text.
     safety = safety_rules.classify(result.transcription, lang=lang)
 
     if safety.is_crisis:
+        if intake_id is not None:
+            # S5 lock #4: crisis path is create-only. Extending an
+            # existing intake into a crisis turn is out of scope for
+            # Bundle 1 (ADR-004 implicit). Raised BEFORE any Gemma
+            # invocation so a misuse never burns a tool_call budget.
+            raise ValueError(
+                "crisis path is create-only; cannot extend "
+                f"intake_id={intake_id} into a crisis turn"
+            )
         log.warning(
             "crisis_path_taken",
             lang=lang,
             source_device_id=source_device_id,
             matched_keyword_count=len(safety.matched_keywords),
         )
+        # S6: invoke Gemma to format a locale-aware referral. The
+        # deterministic classifier above is the sole safety gate;
+        # Gemma's role is structured output formatting only. See
+        # ADR-004 REV 2. On any tool_call failure the helper falls
+        # back to the static _REFERRAL_ORG_BY_LANG lookup so the
+        # safety path always completes.
+        referral_org, _locale_message = await _format_crisis_referral(
+            transcription=result.transcription,
+            lang=lang,
+            safety=safety,
+            ollama=ollama,
+        )
         return _persist_crisis_record(
             lang=lang,
             source_device_id=source_device_id,
             safety=safety,
             storage=storage,
+            referral_organization=referral_org,
         )
 
-    # Stage 3: Gemma tool-calling extraction on SOURCE text (Q1 locked).
-    # Exceptions propagate (InvalidToolCall, InferenceTimeout,
-    # InferenceFailed, Pydantic ValidationError on args).
+    # Stage 3: Gemma tool-calling extraction on SOURCE text.
     messages = _build_extraction_messages(result.transcription)
     tool_result = await ollama.tool_call(
         messages=messages, tools=[EXTRACT_INTAKE_FIELDS_TOOL]
     )
     args = ExtractIntakeFieldsArgs(**tool_result.arguments)
 
-    # Stage 4: map extraction → IntakeRecord fields (discrepancy #3).
+    # Stage 4: map extraction → IntakeRecord fields.
     intake_fields = _map_extraction_to_intake(args, lang)
 
-    # Stage 5: two-step persist for per-field audit events.
-    record = storage.create_intake_record(
-        language=lang,
-        source_device_id=source_device_id,
-        status="partial",
-    )
+    # Stage 5: persist (create-or-extend).
+    if intake_id is None:
+        # Create path: new partial record then bulk update with
+        # extracted fields.
+        record = storage.create_intake_record(
+            language=lang,
+            source_device_id=source_device_id,
+            status="partial",
+        )
+        before_fields: dict[str, Any] = {}
+    else:
+        # Extend path: read existing record, capture before-state for
+        # diff, then update with extracted fields. Storage's no-op
+        # detection (storage_adapter.py:168) skips unchanged fields.
+        existing = storage.read_intake_record(intake_id)
+        if existing is None:
+            raise KeyError(f"IntakeRecord not found: {intake_id}")
+        record = existing
+        before_fields = {k: existing.model_dump().get(k) for k in intake_fields}
+
+    # Filter out empty/None values that would clobber existing data
+    # on the extend path. On create-path this is a no-op (all fields
+    # default empty/None on the freshly-created record).
+    if intake_id is not None:
+        intake_fields = {
+            k: v for k, v in intake_fields.items()
+            if v is not None and v != ""
+        }
+
     record = storage.update_intake_record(record.id, **intake_fields)
 
-    # Stage 6: structlog minor_flagged signal (discrepancy #1).
+    # Stage 6: structlog minor_flagged signal.
     if intake_fields.get("is_minor"):
         log.info(
             "minor_flagged",
@@ -286,13 +340,24 @@ async def ingest_audio(
             lang=lang,
         )
 
-    # Stage 7: matching trigger. Pairwise fan-out vs every eligible
-    # candidate; persists matches as proposed MatchLinks.
-    await _trigger_matching(record, storage=storage)
+    # Stage 7: matching trigger. On create-path, fire unconditionally
+    # (S4 behavior). On extend-path, fire only if identity-bearing
+    # fields actually changed.
+    if intake_id is None:
+        await _trigger_matching(record, storage=storage)
+    else:
+        changed = {
+            k for k, v in intake_fields.items()
+            if before_fields.get(k) != v
+        }
+        await _maybe_retrigger_matching(record, changed, storage=storage)
 
     # Stage 8: promote to complete if invariants satisfied.
     if record.full_name_source_script and record.relationship_to_seeker:
-        record = storage.update_intake_record(record.id, status="complete")
+        if record.status != "complete":
+            record = storage.update_intake_record(
+                record.id, status="complete"
+            )
 
     log.info(
         "ingest_audio_complete",
@@ -311,13 +376,24 @@ def _persist_crisis_record(
     source_device_id: str,
     safety: safety_rules.SafetyResult,
     storage: StorageAdapter,
+    referral_organization: str | None = None,
 ) -> IntakeRecord:
     """Crisis-path persistence: create partial then update to
     paused_for_crisis to trigger the spec-mandated triple-emit
     (intake_paused → crisis_detected → referral_issued) plus
     field_extracted events for the crisis fields.
+
+    If referral_organization is provided (S6: Gemma escalate_crisis
+    output), it overrides the static _REFERRAL_ORG_BY_LANG lookup.
+    Pass None (or omit) to use the static fallback — this keeps the
+    pre-S6 callsite shape green and gives _format_crisis_referral
+    a clean failure path.
     """
-    referral_org = _REFERRAL_ORG_BY_LANG.get(lang, "ICRC Family Links Network")
+    referral_org = (
+        referral_organization
+        if referral_organization
+        else _REFERRAL_ORG_BY_LANG.get(lang, "ICRC Family Links Network")
+    )
     crisis_match_path = "keyword" if safety.matched_keywords else None
 
     record = storage.create_intake_record(
@@ -334,6 +410,80 @@ def _persist_crisis_record(
         referral_organization=referral_org,
     )
     return record
+
+
+# ─── Crisis referral formatting (S6) ─────────────────────────────
+
+
+async def _format_crisis_referral(
+    *,
+    transcription: str,
+    lang: str,
+    safety: safety_rules.SafetyResult,
+    ollama: _OllamaPort,
+) -> tuple[str, str]:
+    """Invoke Gemma escalate_crisis tool to format a locale-aware referral.
+
+    Returns (referral_organization, locale_aware_message) on success;
+    falls back to (_REFERRAL_ORG_BY_LANG[lang], "") on any tool_call
+    or validation failure. The deterministic safety_rules.classify
+    above is the SOLE safety gate; this helper only formats. See
+    ADR-004 REV 2.
+
+    Failure cannot break the safety path — the crisis flag still
+    fires, the audit triple still emits, and the user still sees a
+    referral organization (just templated rather than Gemma-generated).
+    """
+    messages = _build_crisis_messages(transcription, lang, safety.matched_keywords)
+    try:
+        result = await ollama.tool_call(
+            messages=messages, tools=[ESCALATE_CRISIS_TOOL]
+        )
+        args = EscalateCrisisArgs(**result.arguments)
+        log.info(
+            "crisis_referral_formatted",
+            referral_organization=args.referral_organization,
+            locale_aware_message=args.locale_aware_message,
+            lang=lang,
+            matched_keyword_count=len(safety.matched_keywords),
+        )
+        return args.referral_organization, args.locale_aware_message
+    except (
+        InferenceTimeout,
+        InferenceFailed,
+        InvalidToolCall,
+        ValidationError,
+    ) as exc:
+        log.warning(
+            "crisis_referral_fallback",
+            error_class=type(exc).__name__,
+            lang=lang,
+        )
+        fallback = _REFERRAL_ORG_BY_LANG.get(lang, "ICRC Family Links Network")
+        return fallback, ""
+
+
+def _build_crisis_messages(
+    text: str, lang: str, matched_keywords: list[str]
+) -> list[dict[str, Any]]:
+    """Crisis system prompt + source-language transcription as user message.
+
+    Includes the deterministic classifier's matched_keywords inline
+    so Gemma has the signal that triggered the safety branch without
+    re-evaluating it. Same source-text discipline as
+    _build_extraction_messages.
+    """
+    keyword_summary = (
+        ", ".join(matched_keywords) if matched_keywords else "(none)"
+    )
+    user_content = (
+        f"Source language: {lang}. Matched crisis keywords: "
+        f"{keyword_summary}. Speaker said: {text}"
+    )
+    return [
+        {"role": "system", "content": _CRISIS_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
 
 
 def _build_extraction_messages(text: str) -> list[dict[str, Any]]:
@@ -365,20 +515,75 @@ def _map_extraction_to_intake(
 
     is_minor is derived from age: True iff age is set and < 18.
     """
+    # On extend turns Gemma may emit null for fields the speaker
+    # didn't repeat. The pipeline's empty-filter (extend path) drops
+    # None / "" entries so existing data is preserved. On create
+    # path, IntakeRecord requires str (not None) for the identity
+    # fields; coerce None → "" here so validation succeeds and
+    # storage's no-op detection treats the empty as "not yet set."
     full_name = args.full_name
+    relationship = args.relationship
     is_latin = lang in _LATIN_SCRIPT_LANGS
     is_minor = args.age is not None and args.age < 18
 
     return {
-        "full_name_source_script": full_name,
-        "full_name_transliteration": full_name if is_latin else "",
-        "relationship_to_seeker": args.relationship,
+        "full_name_source_script": full_name if full_name is not None else "",
+        "full_name_transliteration": (
+            full_name if (full_name is not None and is_latin) else ""
+        ),
+        "relationship_to_seeker": (
+            relationship if relationship is not None else ""
+        ),
         "age": args.age,
         "is_minor": is_minor,
+        "last_seen_location": args.last_seen_location,
+        "last_seen_date": args.last_seen_date,
+        # IntakeRecord uses `distinguishing_marks`; the extraction
+        # tool's idiom is `distinguishing_features`. Names diverge
+        # historically but mean the same thing.
+        "distinguishing_marks": args.distinguishing_features,
     }
 
 
 # ─── Matching trigger (S5) ───────────────────────────────────────
+
+
+# IntakeRecord field names that, when changed by an extend turn or a
+# worker-entered transliteration update, must re-fire matching.
+# `relationship_to_seeker` is excluded because matching.py does not
+# consume it (verified S5 recon Q6); changes to it can't affect match
+# outcomes. `is_minor` excluded for the same reason.
+_IDENTITY_FIELDS_FOR_MATCHING = frozenset({
+    "full_name_source_script",
+    "full_name_transliteration",
+    "age",
+    "last_seen_location",
+    "last_seen_date",
+    "distinguishing_marks",
+})
+
+
+async def _maybe_retrigger_matching(
+    record: IntakeRecord,
+    changed_fields: set[str],
+    *,
+    storage: StorageAdapter,
+) -> list[MatchLink]:
+    """Fire _trigger_matching only when changed fields could affect
+    a match outcome. Used by the extend path of ingest_audio and the
+    POST /intake/{id}/transliteration route.
+
+    Returns the list of MatchLinks created (possibly empty).
+    """
+    relevant = changed_fields & _IDENTITY_FIELDS_FOR_MATCHING
+    if not relevant:
+        return []
+    log.info(
+        "matching_retrigger_fired",
+        record_id=str(record.id),
+        changed_fields=sorted(relevant),
+    )
+    return await _trigger_matching(record, storage=storage)
 
 
 def _source_script_for_lang(lang: str) -> str:

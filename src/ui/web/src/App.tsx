@@ -16,9 +16,14 @@ import type {
   RecordData,
   TraceCall,
 } from './lib/types';
+import { INITIAL_RECORD } from './lib/initialState';
+import { useEventStream } from './hooks/useEventStream';
+import { useMicCapture } from './hooks/useMicCapture';
+import { IntakePanel } from './components/IntakePanel';
+import { uploadAudioBlob } from './lib/api';
 
 type Phase = 'ready' | 'recording' | 'processing' | 'done';
-type View = 'intake' | 'match';
+type View = 'single' | 'split' | 'match';
 type StatusTone = 'green' | 'amber' | 'red';
 
 // Input shape passed to logCall — id and t are added by logCall itself.
@@ -63,14 +68,6 @@ const DEMO_STEPS: DemoStep[] = [
               trace: { name: "update_rfl_record", args: { record_id: "147" }, result: "queued_local" } },
 ];
 
-const INITIAL_RECORD: RecordData = {
-  name: "", nameVariants: null, nameNative: null, nameNativeRtl: false,
-  age: "", relationship: "", language: "Spanish (Latin America)",
-  lastSeenLocation: "", lastSeenLocationSource: "", lastSeenLocationRtl: false,
-  lastSeenDate: "", circumstance: "",
-  physicalDesc: "", features: "",
-  guardian: { guardianPresent: "", cpConsent: "", cmKnown: "", referralStatus: "" },
-};
 
 // ---------- Top bar -------------------------------------------------------
 type TopBarProps = {
@@ -144,16 +141,45 @@ function TopBar({ sessionLabel, statusLabel, statusTone, queued, lang, setLang }
 
 // ---------- Voice-note affordance ----------------------------------------
 type VoicePanelProps = {
+  /* phase is now derived inside VoicePanel from useMicCapture state.
+     Kept on the props type as `Phase` only because runDemo() still
+     drives the App-level `phase` state for the offline fallback path
+     via the DemoDock; vestigial here but harmless. */
   phase: Phase;
   lang: Language;
+  /* onBegin still passed for the offline-demo fallback (DemoDock);
+     ignored by VoicePanel's mic flow. */
   onBegin: () => void;
   elapsedSec: number;
+  sourceDeviceId: string;
+  intakeId: string | null;
 };
 
-function VoicePanel({ phase, lang, onBegin, elapsedSec }: VoicePanelProps) {
+function VoicePanel({ lang, elapsedSec, sourceDeviceId, intakeId }: VoicePanelProps) {
+  const intakeIdRef = useRef<string | null>(intakeId);
+  intakeIdRef.current = intakeId;
+
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const { state, start, stop, error } = useMicCapture({
+    onStop: async (blob) => {
+      try {
+        await uploadAudioBlob({
+          blob,
+          lang,
+          sourceDeviceId,
+          intakeId: intakeIdRef.current,
+        });
+        setUploadError(null);
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : String(err));
+      }
+    },
+  });
+
   const waveState =
-    phase === "recording" ? "recording" :
-    phase === "processing" ? "processing" :
+    state === "recording" ? "recording" :
+    state === "processing" ? "processing" :
     "idle";
 
   const readyCopy = {
@@ -163,6 +189,7 @@ function VoicePanel({ phase, lang, onBegin, elapsedSec }: VoicePanelProps) {
     fa: "آمادهٔ شروع مصاحبه — برای شخص مقابل توضیح دهید KIN چه می‌کند، سپس «شروع» را فشار دهید.",
   }[lang] || readyCopyFallback;
   const beginLabel = { en: "Begin", es: "Comenzar", ar: "ابدأ", fa: "شروع" }[lang] || "Begin";
+  const stopLabel = { en: "Stop", es: "Detener", ar: "إيقاف", fa: "توقف" }[lang] || "Stop";
   const rtl = lang === "ar" || lang === "fa";
 
   return (
@@ -170,8 +197,9 @@ function VoicePanel({ phase, lang, onBegin, elapsedSec }: VoicePanelProps) {
       <div className="px-5 py-4 border-b border-hair flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className={`w-8 h-8 rounded-kin border flex items-center justify-center ${
-            phase === "recording" ? "border-red/40 text-red bg-red-soft" :
-            phase === "processing" ? "border-line text-muted" :
+            state === "recording" ? "border-red/40 text-red bg-red-soft" :
+            state === "processing" ? "border-line text-muted" :
+            state === "error" ? "border-red/40 text-red" :
             "border-line text-ink"
           }`}>
             <IconMic size={16} />
@@ -179,10 +207,10 @@ function VoicePanel({ phase, lang, onBegin, elapsedSec }: VoicePanelProps) {
           <div>
             <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Voice intake</div>
             <div className="text-[15px] text-ink mt-0.5">
-              {phase === "ready"      && "Not recording"}
-              {phase === "recording"  && <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-red animate-pulse" />Recording — speaker is giving testimony</span>}
-              {phase === "processing" && "Listening completed — structuring record…"}
-              {phase === "done"       && "Intake complete"}
+              {state === "idle"       && "Not recording"}
+              {state === "recording"  && <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-red animate-pulse" />Recording — speaker is giving testimony</span>}
+              {state === "processing" && "Listening completed — structuring record…"}
+              {state === "error"      && (error ?? uploadError ?? "Microphone unavailable")}
             </div>
           </div>
         </div>
@@ -192,7 +220,7 @@ function VoicePanel({ phase, lang, onBegin, elapsedSec }: VoicePanelProps) {
       </div>
 
       <div className="px-5 py-5">
-        {phase === "ready" ? (
+        {(state === "idle" || state === "error") ? (
           <div className={`flex flex-col sm:flex-row sm:items-center gap-4 ${rtl ? "rtl" : ""}`}>
             <div className="flex-1 min-w-0">
               <div className="text-[17px] text-ink leading-relaxed" style={{ textWrap: "pretty" }}>
@@ -202,18 +230,20 @@ function VoicePanel({ phase, lang, onBegin, elapsedSec }: VoicePanelProps) {
                 <IconInfo size={13} /> Consent to begin is logged with this record.
               </div>
             </div>
-            <Button variant="primary" size="lg" icon={<IconMic size={18} />} onClick={onBegin}>
+            <Button variant="primary" size="lg" icon={<IconMic size={18} />} onClick={() => { void start(); }}>
               {beginLabel}
             </Button>
           </div>
         ) : (
           <div className="flex items-center gap-5">
             <div className="flex-1"><Waveform state={waveState} bars={42} /></div>
-            {phase === "processing" && (
-              <Chip icon={<IconSparkle size={12} />} tone="primary">Structuring</Chip>
+            {state === "recording" && (
+              <Button variant="secondary" size="md" onClick={stop}>
+                {stopLabel}
+              </Button>
             )}
-            {phase === "done" && (
-              <Chip icon={<IconCheck size={12} />} tone="green">Intake complete</Chip>
+            {state === "processing" && (
+              <Chip icon={<IconSparkle size={12} />} tone="primary">Uploading</Chip>
             )}
           </div>
         )}
@@ -317,12 +347,13 @@ type DemoDockProps = {
   onReset: () => void;
   onMatch: () => void;
   onCrisis: () => void;
+  onSplit: () => void;
   onClose: () => void;
   phase: Phase;
   view: View;
 };
 
-function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onClose, phase, view }: DemoDockProps) {
+function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onSplit, onClose, phase, view }: DemoDockProps) {
   if (!visible) return null;
   return (
     <div className="fixed bottom-3 left-3 z-30 bg-card border border-line rounded-kin-lg shadow-elevated px-3 py-2.5 w-[min(440px,calc(100%-24px))]">
@@ -343,12 +374,16 @@ function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onClose, phase
       </div>
       <div className="flex flex-wrap gap-1.5">
         <Button size="sm" variant="primary" icon={<IconPlay size={14} />}
-                onClick={onStart} disabled={phase !== "ready" || view !== "intake"}>
+                onClick={onStart} disabled={phase !== "ready" || view !== "single"}>
           Start demo
         </Button>
         <Button size="sm" variant="secondary" icon={<IconLink size={14} />}
                 onClick={onMatch}>
           Simulate match
+        </Button>
+        <Button size="sm" variant="secondary" icon={<IconArrowRight size={14} />}
+                onClick={onSplit}>
+          {view === "split" ? "Single view" : "Split view"}
         </Button>
         <Button size="sm" variant="secondary" icon={<IconAlert size={14} />}
                 onClick={onCrisis}>
@@ -389,7 +424,7 @@ function DemoReopenPill({ onOpen }: DemoReopenPillProps) {
 function App() {
   const [record, setRecord]                   = useState<RecordData>(INITIAL_RECORD);
   const [phase, setPhase]                     = useState<Phase>("ready");
-  const [view, setView]                       = useState<View>("intake");
+  const [view, setView]                       = useState<View>("single");
   const [matchPhase, setMatchPhase]           = useState<MatchPhase>("split");
   const [lang, setLang]                       = useState<Language>("en");
   const [crisisOpen, setCrisisOpen]           = useState(false);
@@ -402,6 +437,56 @@ function App() {
   const [highlightedCall, setHighlightedCall] = useState<number | null>(null);
   const demoStartRef = useRef<number | null>(null);
   const callIdRef = useRef(0);
+
+  // SSE hook: opens /intake/stream and dispatches incoming envelopes
+  // into a reducer. record + calls below are *also* driven imperatively
+  // by runDemo() for the offline Demo button; SSE arrivals overlay via
+  // the useEffect below.
+  const { state: streamState } = useEventStream();
+  const seenAuditCount = useRef(0);
+  const seenStructlogCount = useRef(0);
+
+  // Bridge SSE record into local record state. When SSE delivers a
+  // field_extracted event that updates streamState.record, mirror the
+  // change into local record so existing components keep working.
+  useEffect(() => {
+    if (streamState.auditEvents.length > seenAuditCount.current) {
+      seenAuditCount.current = streamState.auditEvents.length;
+      // Use the reducer's already-mapped record (full RecordData shape).
+      setRecord(streamState.record);
+      // Surface the most-recently-changed field for the populate animation.
+      const last = streamState.auditEvents[streamState.auditEvents.length - 1];
+      if (last && last.payload.event_type === 'field_extracted') {
+        const fieldName = (last.payload.details as { field_name?: string }).field_name;
+        if (fieldName) {
+          setJustPopulated(fieldName);
+          setTimeout(() => setJustPopulated((j) => (j === fieldName ? null : j)), 2500);
+        }
+      }
+    }
+  }, [streamState.record, streamState.auditEvents]);
+
+  // Bridge SSE structlog events into the trace calls list.
+  useEffect(() => {
+    if (streamState.structlogEvents.length > seenStructlogCount.current) {
+      const fresh = streamState.structlogEvents.slice(seenStructlogCount.current);
+      seenStructlogCount.current = streamState.structlogEvents.length;
+      const t0 = demoStartRef.current ?? performance.now();
+      setCalls((prev) => {
+        const next = [...prev];
+        for (const env of fresh) {
+          const id = ++callIdRef.current;
+          next.push({
+            id,
+            t: performance.now() - t0,
+            name: String(env.payload.event ?? 'structlog'),
+            args: { ...env.payload },
+          });
+        }
+        return next;
+      });
+    }
+  }, [streamState.structlogEvents]);
 
   const isMac = useMemo(() => typeof navigator !== "undefined" && /Mac/.test(navigator.platform), []);
 
@@ -508,10 +593,12 @@ function App() {
   };
 
   const onReset = () => {
+    // Reset clears App-level demo state (record/phase/calls/timer)
+    // but leaves view mode untouched. Switching view here would
+    // unmount split-view IntakePanels and destroy their per-panel
+    // SSE state — see bundle1-S4-fix.
     setRecord(INITIAL_RECORD);
     setPhase("ready");
-    setView("intake");
-    setMatchPhase("split");
     setCrisisOpen(false);
     setTimerSec(0);
     setTimerRunning(false);
@@ -560,7 +647,7 @@ function App() {
         {/* MAIN COLUMN */}
         <main className="flex-1 min-w-0">
           <div className="max-w-[1100px] mx-auto px-6 py-6">
-            {view === "intake" ? (
+            {view === "single" && (
               <>
                 {/* Header strip row: timer on right, page title on left */}
                 <div className="flex items-start justify-between gap-4 mb-5">
@@ -583,9 +670,20 @@ function App() {
                   </div>
                 )}
 
-                {/* Voice panel */}
+                {/* Voice panel — single-view mic capture (S5).
+                    sourceDeviceId is hardcoded for the single-panel
+                    workflow (no split context). intakeId comes from
+                    the App-level useEventStream reducer (set by the
+                    intake_created audit event after first turn). */}
                 <div className="mb-5">
-                  <VoicePanel phase={phase} lang={lang} onBegin={onBegin} elapsedSec={timerSec} />
+                  <VoicePanel
+                    phase={phase}
+                    lang={lang}
+                    onBegin={onBegin}
+                    elapsedSec={timerSec}
+                    sourceDeviceId="laptop"
+                    intakeId={streamState.intakeId}
+                  />
                 </div>
 
                 {/* Completeness meter */}
@@ -606,10 +704,53 @@ function App() {
                   <span>Record stored on this device. Will sync when you next connect to the local hub.</span>
                 </div>
               </>
-            ) : (
+            )}
+
+            {view === "split" && (
+              <>
+                <div className="flex items-start justify-between gap-4 mb-5">
+                  <div>
+                    <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Split view</div>
+                    <h1 className="text-[24px] font-semibold text-ink mt-0.5 tracking-[-0.01em]">
+                      Two tents · same child
+                    </h1>
+                    <div className="text-[14px] text-muted mt-1">
+                      Each panel subscribes to its own device's SSE stream.
+                    </div>
+                  </div>
+                  <IntakeTimer seconds={timerSec} running={timerRunning} />
+                </div>
+                <div className="grid grid-cols-2 gap-6">
+                  <IntakePanel
+                    sourceDeviceId="tent_a"
+                    tent="a"
+                    panelLabel="Tent A"
+                    lang={lang}
+                    phase={phase}
+                    timerSec={timerSec}
+                    timerRunning={timerRunning}
+                    onBegin={onBegin}
+                    crisisOpen={crisisOpen}
+                  />
+                  <IntakePanel
+                    sourceDeviceId="tent_b"
+                    tent="b"
+                    panelLabel="Tent B"
+                    lang={lang}
+                    phase={phase}
+                    timerSec={timerSec}
+                    timerRunning={timerRunning}
+                    onBegin={onBegin}
+                    crisisOpen={crisisOpen}
+                  />
+                </div>
+              </>
+            )}
+
+            {view === "match" && (
               <TransliterationMatch
                 phase={matchPhase}
-                onBack={() => setView("intake")}
+                onBack={() => setView("single")}
               />
             )}
           </div>
@@ -648,6 +789,7 @@ function App() {
         onReset={onReset}
         onMatch={onSimulateMatch}
         onCrisis={onSimulateCrisis}
+        onSplit={() => setView(v => (v === "split" ? "single" : "split"))}
         onClose={() => setDemoDockVisible(false)}
         phase={phase}
         view={view}

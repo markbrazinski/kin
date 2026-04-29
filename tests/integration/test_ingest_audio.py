@@ -24,7 +24,6 @@ from integration.transcription_pipeline import ingest_audio
 from integration.whisper_adapter import PaddingFailed
 from tests.fakes.fake_clock import FakeClock
 
-
 # ─── Stubs (mirror test_transcription_pipeline.py patterns) ───────
 
 
@@ -164,8 +163,20 @@ async def test_ingest_audio_crisis_path_arabic_skips_extraction(
 
     # "اقتلني" is a real keyword from _CRISIS_KEYWORDS["ar"].
     whisper = _WhisperStub(text="اقتلني الآن")
-    # tool_call_response stays None — accidental invocation fails loud.
-    ollama = _OllamaStub(english="kill me now", tool_call_response=None)
+    # S6: crisis branch invokes Gemma escalate_crisis (locale-aware
+    # formatter; safety_rules.classify is the gate). Configure the
+    # stub to return a valid escalate_crisis result so extract_intake_fields
+    # is the only thing that must be skipped.
+    ollama = _OllamaStub(
+        english="kill me now",
+        tool_call_response=ToolCallResult(
+            name="escalate_crisis",
+            arguments={
+                "referral_organization": "الصليب الأحمر",
+                "locale_aware_message": "يرجى الاتصال بالرقم...",
+            },
+        ),
+    )
 
     record = await ingest_audio(
         audio,
@@ -180,10 +191,14 @@ async def test_ingest_audio_crisis_path_arabic_skips_extraction(
     assert record.is_crisis is True
     assert record.crisis_match_path == "keyword"
     assert record.referral_issued is True
-    assert record.referral_organization == "ICRC Family Links Network"
+    # S6: Gemma override populates referral_organization (locale-aware).
+    assert record.referral_organization == "الصليب الأحمر"
 
-    # Extraction skipped.
-    assert ollama.tool_call_calls == []
+    # extract_intake_fields skipped; escalate_crisis invoked once.
+    assert len(ollama.tool_call_calls) == 1
+    _msgs, tools = ollama.tool_call_calls[0]
+    tool_names = {t["function"]["name"] for t in tools}
+    assert tool_names == {"escalate_crisis"}
 
     # Audit events ordered: created → triple-emit → field_extracted ×N.
     event_types = [e.event_type for e in storage.list_audit_events()]
@@ -435,3 +450,150 @@ async def test_ingest_audio_match_fires_on_second_mohamad_ingest(
     assert len(trigger_events) == 1
     assert trigger_events[0]["match_count"] == 1
     assert trigger_events[0]["candidate_count"] == 1
+
+
+# ─── S6 crisis-branch tests (5–7) ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ingest_audio_crisis_path_uses_gemma_referral(
+    tmp_path: Path,
+) -> None:
+    """S6 happy path: Gemma escalate_crisis returns a locale-aware NGO
+    name; that name is what lands on IntakeRecord.referral_organization,
+    NOT the static _REFERRAL_ORG_BY_LANG entry.
+    """
+    storage = _adapter(tmp_path)
+    audio = _audio_path(tmp_path)
+
+    whisper = _WhisperStub(text="me suicido ahora")
+    ollama = _OllamaStub(
+        english="I'm killing myself now",
+        tool_call_response=ToolCallResult(
+            name="escalate_crisis",
+            arguments={
+                "referral_organization": "Cruz Roja",
+                "locale_aware_message": "Por favor llame a Cruz Roja al 911.",
+            },
+        ),
+    )
+
+    record = await ingest_audio(
+        audio,
+        "es",
+        "tent_a",
+        whisper=whisper,
+        ollama=ollama,
+        storage=storage,
+    )
+
+    # Gemma override populated; NOT the static lookup
+    # ("ICRC Family Links Network" for es).
+    assert record.referral_organization == "Cruz Roja"
+    assert record.status == "paused_for_crisis"
+    assert record.is_crisis is True
+    assert record.crisis_match_path == "keyword"  # classifier still decided
+    assert record.referral_issued is True
+
+    # escalate_crisis invoked once; extract_intake_fields skipped.
+    assert len(ollama.tool_call_calls) == 1
+    _msgs, tools = ollama.tool_call_calls[0]
+    assert {t["function"]["name"] for t in tools} == {"escalate_crisis"}
+
+
+@pytest.mark.asyncio
+async def test_ingest_audio_crisis_path_falls_back_to_static_lookup(
+    tmp_path: Path,
+) -> None:
+    """S6 fallback: Gemma raises; safety path still completes with the
+    static referral. Audit triple still emits in order.
+    """
+    from integration._errors import InferenceTimeout
+
+    class _RaisingOllama(_OllamaStub):
+        async def tool_call(
+            self,
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]],
+        ) -> ToolCallResult:
+            self.tool_call_calls.append((messages, tools))
+            raise InferenceTimeout("simulated cold-start timeout")
+
+    storage = _adapter(tmp_path)
+    audio = _audio_path(tmp_path)
+
+    whisper = _WhisperStub(text="me suicido ahora")
+    ollama = _RaisingOllama(english="I'm killing myself now")
+
+    record = await ingest_audio(
+        audio,
+        "es",
+        "tent_a",
+        whisper=whisper,
+        ollama=ollama,
+        storage=storage,
+    )
+
+    # Static fallback for es is "ICRC Family Links Network".
+    assert record.referral_organization == "ICRC Family Links Network"
+    assert record.status == "paused_for_crisis"
+    assert record.is_crisis is True
+    assert record.referral_issued is True
+
+    # Audit triple still emitted in order.
+    event_types = [e.event_type for e in storage.list_audit_events()]
+    assert event_types[0] == "intake_created"
+    assert event_types[1] == "intake_paused"
+    assert event_types[2] == "crisis_detected"
+    assert event_types[3] == "referral_issued"
+
+
+@pytest.mark.asyncio
+async def test_ingest_audio_crisis_extend_still_raises_value_error(
+    tmp_path: Path,
+) -> None:
+    """S5 lock #4 regression: extending an existing intake_id into a
+    crisis turn raises ValueError BEFORE invoking Gemma. Locks the
+    extend-incompatible invariant; ensures we don't burn a tool_call
+    budget on misuse.
+    """
+    storage = _adapter(tmp_path)
+    audio = _audio_path(tmp_path)
+
+    # Seed a non-crisis record to extend INTO a crisis turn.
+    seed_whisper = _WhisperStub(text="Estoy buscando a mi hijo Carlos.")
+    seed_ollama = _OllamaStub(
+        english="I am looking for my son Carlos.",
+        tool_call_response=ToolCallResult(
+            name="extract_intake_fields",
+            arguments={"full_name": "Carlos", "relationship": "hijo"},
+        ),
+    )
+    seed_record = await ingest_audio(
+        audio,
+        "es",
+        "tent_a",
+        whisper=seed_whisper,
+        ollama=seed_ollama,
+        storage=storage,
+    )
+
+    # Now extend with a crisis transcript. tool_call_response stays None
+    # so any Gemma invocation (extract OR escalate) fails loud — proving
+    # the ValueError fires before any Gemma path runs.
+    crisis_whisper = _WhisperStub(text="me suicido ahora")
+    crisis_ollama = _OllamaStub(english="kill myself", tool_call_response=None)
+
+    with pytest.raises(ValueError, match="crisis path is create-only"):
+        await ingest_audio(
+            audio,
+            "es",
+            "tent_a",
+            whisper=crisis_whisper,
+            ollama=crisis_ollama,
+            storage=storage,
+            intake_id=seed_record.id,
+        )
+
+    # No Gemma tool_call invoked on the crisis-extend attempt.
+    assert crisis_ollama.tool_call_calls == []

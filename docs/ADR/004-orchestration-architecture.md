@@ -164,6 +164,77 @@ call → one bulk update → one event burst.
 None. The four decisions land in code and tests in the S5 commit;
 ADR-004 preserves the rationale.
 
+## REV 2 — Crisis branch invokes Gemma for referral formatting (S6, 2026-04-29)
+
+**Status:** Accepted
+
+### Change
+
+The crisis branch in `transcription_pipeline.ingest_audio` now invokes
+Gemma via `ollama.tool_call()` with the `escalate_crisis` tool when
+`safety_rules.classify` returns `is_crisis=True`. Gemma returns a
+`referral_organization` (locale-aware NGO name in the speaker's
+language) and a `locale_aware_message`. The `referral_organization`
+is passed to `_persist_crisis_record`, which writes it to the
+existing `IntakeRecord.referral_organization` field. The
+`locale_aware_message` is emitted via structlog (event name
+`crisis_referral_formatted`) and rides the SSE bridge to the
+frontend sidebar; it is NOT persisted to `IntakeRecord` or to
+`audit_events.jsonl`.
+
+Previously the crisis branch was deterministic-only: classify →
+static `_REFERRAL_ORG_BY_LANG` lookup → triple-emit → return.
+
+### Why this is not a safety-gate regression
+
+The deterministic keyword classifier (`safety_rules.classify`)
+remains the **sole safety gate**. Gemma's role on the crisis path is
+structured-output formatting only: it picks an NGO name and writes a
+short calm message in the speaker's language. Gemma does NOT decide
+whether a turn is a crisis. That decision is made by `classify` and
+is fully auditable by reading `matched_keywords` in the structlog
+trail (and via the `crisis_match_path="keyword"` field on the
+persisted `IntakeRecord`).
+
+If the Gemma `escalate_crisis` tool_call fails (timeout, schema
+validation failure, model unavailable), `_format_crisis_referral`
+catches `InferenceTimeout` / `InferenceFailed` / `InvalidToolCall` /
+`ValidationError` and falls back to the static `_REFERRAL_ORG_BY_LANG`
+lookup. The crisis flag still fires, the audit triple still emits,
+the user still sees a referral organization — only the message
+text degrades from Gemma-generated to absent (empty string), and
+the organization name degrades from locale-tuned to template.
+
+`crisis_match_path` stays `"keyword"` regardless — the keyword
+classifier still decided. There is no "semantic" path in S6.
+
+### Why this is reversible
+
+If a future review concludes that Gemma-generated output on the
+safety path is too risky even bounded to formatting, the change is
+straightforward to revert:
+
+1. Remove the `_format_crisis_referral` call from the crisis branch
+   in `ingest_audio` (5 lines)
+2. `_persist_crisis_record(referral_organization=None)` is the
+   default; the static fallback path runs on its own
+3. Optionally delete `_format_crisis_referral`,
+   `_build_crisis_messages`, `_CRISIS_SYSTEM_PROMPT`, and
+   `escalate_crisis_tool.py`
+
+No data migration needed. No persisted record schema depends on
+Gemma output. The audit triple is unchanged.
+
+### Forward note for future agents
+
+**Do not roll back this REV 2 thinking it is drift.** The criterion
+for revert is: "is Gemma's output on the safety path causing harm
+we cannot detect?" Not: "did we recently add a Gemma call we should
+remove for cleanliness?" Reverting is straightforward (remove
+`_format_crisis_referral` call from the crisis branch;
+`_persist_crisis_record` falls back automatically). The work to
+revert is small; the work to re-add was bounded and intentional.
+
 ## References
 
 - Part 1 REV 4 (storage state spec): `intake_record` fields,
