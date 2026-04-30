@@ -31,6 +31,13 @@ export type AuditEventPayload = {
   match_id: string | null;
   actor: string;
   details: Record<string, unknown>;
+  /* Bundle 1.5 S5: total candidates from the matching trigger run.
+     0 for empty-result match_proposed events (where record_ids has
+     a single new-record id) and other event types; otherwise the
+     count of matches created in the run. Optional in TS to stay
+     backward-compatible with pre-S5 JSONL records (Python schema
+     defaults to 0). */
+  candidate_count?: number;
 };
 
 export type StructlogEventPayload = {

@@ -226,11 +226,57 @@ def test_create_match_link_persists_and_emits_match_proposed(
     match_file = tmp_path / "storage" / MATCH_FILE
     assert str(link.id) in match_file.read_text()
 
-    # Audit event emitted.
+    # Audit event emitted with candidate_count from caller (default 1).
     proposed = adapter.list_audit_events(event_type="match_proposed")
     assert len(proposed) == 1
     assert proposed[0].match_id == link.id
     assert set(proposed[0].record_ids) == {record_a.id, record_b.id}
+    assert proposed[0].candidate_count == 1
+
+
+def test_create_match_link_propagates_candidate_count_to_audit_event(
+    tmp_path: Path,
+) -> None:
+    """Bundle 1.5 S5: candidate_count parameter rides through to the
+    audit event so frontend matchCandidates state can derive the
+    queue rail badge value without re-counting events."""
+    adapter = _adapter(tmp_path)
+    record_a = adapter.create_intake_record(language="ar", source_device_id="tent_a")
+    record_b = adapter.create_intake_record(language="ar", source_device_id="tent_b")
+
+    adapter.create_match_link(
+        record_a_id=record_a.id,
+        record_b_id=record_b.id,
+        confidence_band="high",
+        confidence_score=0.91,
+        match_reasoning={"matched_fields": ["name"], "phonetic_score": 1.0, "reason": "x"},
+        candidate_count=4,
+    )
+    proposed = adapter.list_audit_events(event_type="match_proposed")
+    assert proposed[-1].candidate_count == 4
+
+
+def test_emit_match_proposed_empty_writes_summary_event(
+    tmp_path: Path,
+) -> None:
+    """Bundle 1.5 S5: empty-result match runs emit a summary event
+    with record_ids=[new_record_id] and candidate_count=0 so the
+    frontend can confirm "this turn produced no candidates" rather
+    than guessing from event absence."""
+    adapter = _adapter(tmp_path)
+    record = adapter.create_intake_record(language="ar", source_device_id="tent_a")
+
+    event = adapter.emit_match_proposed_empty(new_record_id=record.id)
+
+    assert event.event_type == "match_proposed"
+    assert event.record_ids == [record.id]
+    assert event.candidate_count == 0
+    assert event.match_id is None
+
+    # Persisted to JSONL audit log.
+    proposed = adapter.list_audit_events(event_type="match_proposed")
+    assert len(proposed) == 1
+    assert proposed[0].id == event.id
 
 
 def test_update_match_link_status_to_confirmed_emits_match_confirmed(

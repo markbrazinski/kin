@@ -69,13 +69,24 @@ body {
 }
 .kin-merge-pulse { animation: kin-merge-pulse 1100ms ease-out 200ms 1 both; }
 
+@keyframes kin-badge-tick {
+  0%   { opacity: 0.7; transform: scale(1); }
+  50%  { opacity: 1;   transform: scale(1.06); }
+  100% { opacity: 1;   transform: scale(1); }
+}
+.kin-badge-tick {
+  transform-origin: center;
+  animation: kin-badge-tick 150ms ease-out 1 both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .kin-rise,
   .kin-link-draw,
   .kin-merge-pulse,
   .kin-populate,
   .kin-slide-in-right,
-  .kin-wave-bar {
+  .kin-wave-bar,
+  .kin-badge-tick {
     animation: none !important;
   }
 }

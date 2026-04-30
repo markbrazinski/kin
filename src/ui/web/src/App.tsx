@@ -21,8 +21,13 @@ import { useEventStream } from './hooks/useEventStream';
 import { useMicCapture } from './hooks/useMicCapture';
 import { useVoicePhase, type PostStatus } from './hooks/useVoicePhase';
 import { IntakePanel } from './components/IntakePanel';
-import { MatchToast } from './components/MatchToast';
 import { RailNav, type RailRoute } from './components/RailNav';
+import {
+  INITIAL_MATCH_CANDIDATES,
+  applyMatchProposed,
+  getActiveMatchCount,
+  type MatchCandidatesMap,
+} from './state/matchCandidates';
 import { uploadAudioBlob } from './lib/api';
 import { voiceCopy } from './lib/voiceCopy';
 import { dirFor, t } from './lib/i18n';
@@ -523,11 +528,13 @@ function App() {
   });
   const seenAuditCount = useRef(0);
   const seenStructlogCount = useRef(0);
-  const matchToastFiredRef = useRef(false);
-  const [proposedMatch, setProposedMatch] = useState<{
-    matchId: string;
-    recordIds: string[];
-  } | null>(null);
+  /* Bundle 1.5 S5: high-water-mark for the match_proposed dispatcher.
+     Prevents replaying past events on every render of the watcher
+     useEffect; advances as new events land. */
+  const seenMatchProposedCount = useRef(0);
+  const [matchCandidates, setMatchCandidates] =
+    useState<MatchCandidatesMap>(INITIAL_MATCH_CANDIDATES);
+  const activeMatchCount = getActiveMatchCount(matchCandidates);
 
   // Bridge SSE record into local record state. When SSE delivers a
   // field_extracted event that updates streamState.record, mirror the
@@ -549,27 +556,39 @@ function App() {
     }
   }, [streamState.record, streamState.auditEvents]);
 
-  // Beat 6: surface match_proposed events as a deliberate user-driven
-  // primitive (MatchToast), not auto-route. Auto-routing on
-  // match_proposed is fundamentally ambiguous in a multi-turn intake
-  // (every turn returns status=completed via storage promotion logic).
-  // S2-fix1 decision: user clicks "Open match" on the toast to
-  // navigate; idempotent via matchToastFiredRef so subsequent
-  // match_proposed events don't re-show the toast within a session.
+  // Bundle 1.5 S5: dispatch each new match_proposed audit event into
+  // the matchCandidates map. Latest-wins per intake_id (record_ids[0]
+  // per the ordering convention locked at
+  // transcription_pipeline.py:710). Empty-result events
+  // (candidate_count=0, single record id) record audit history but
+  // don't contribute to getActiveMatchCount. The queue rail badge
+  // derives from activeMatchCount above; no toast, no auto-route.
   // The DemoDock "Simulate match" button remains operational as a
   // manual override (onSimulateMatch fires view/phase directly).
   useEffect(() => {
-    if (matchToastFiredRef.current) return;
-    const matchEvent = streamState.auditEvents.find(
-      (e) => e.payload.event_type === 'match_proposed',
+    const total = streamState.auditEvents.length;
+    if (total <= seenMatchProposedCount.current) return;
+    const fresh = streamState.auditEvents.slice(
+      seenMatchProposedCount.current,
     );
-    if (!matchEvent) return;
-    matchToastFiredRef.current = true;
-    setProposedMatch({
-      matchId: matchEvent.payload.match_id ?? matchEvent.payload.id,
-      recordIds: matchEvent.payload.record_ids,
-    });
-  }, [streamState.auditEvents]);
+    seenMatchProposedCount.current = total;
+    let next: MatchCandidatesMap | null = null;
+    for (const env of fresh) {
+      if (env.payload.event_type !== 'match_proposed') continue;
+      const recordIds = env.payload.record_ids;
+      if (recordIds.length === 0) continue;
+      const intakeId = recordIds[0];
+      const candidateCount = env.payload.candidate_count ?? 0;
+      next = applyMatchProposed(
+        next ?? matchCandidates,
+        intakeId,
+        candidateCount,
+        recordIds,
+        env.payload.at,
+      );
+    }
+    if (next !== null) setMatchCandidates(next);
+  }, [streamState.auditEvents, matchCandidates]);
 
   // Bridge SSE structlog events into the trace calls list.
   useEffect(() => {
@@ -710,17 +729,6 @@ function App() {
     resetStream();
   };
 
-  const onOpenMatch = () => {
-    if (!proposedMatch) return;
-    setProposedMatch(null);
-    setView('match');
-    setMatchPhase('split');
-    setTimeout(() => setMatchPhase('linking'), 400);
-    setTimeout(() => setMatchPhase('merged'), 1100);
-  };
-
-  const onDismissMatch = () => setProposedMatch(null);
-
   const onSimulateMatch = () => {
     setView("match");
     setMatchPhase("split");
@@ -769,6 +777,7 @@ function App() {
           setRoute={(next: RailRoute) => {
             setView(next === 'queue' ? 'queue' : 'single');
           }}
+          queuedCount={activeMatchCount}
         />
 
         {/* MAIN COLUMN */}
@@ -947,12 +956,6 @@ function App() {
       {!demoDockVisible && (
         <DemoReopenPill onOpen={() => setDemoDockVisible(true)} />
       )}
-
-      <MatchToast
-        open={proposedMatch !== null}
-        onOpen={onOpenMatch}
-        onDismiss={onDismissMatch}
-      />
 
       <ShortcutHint isMac={isMac} />
     </div>

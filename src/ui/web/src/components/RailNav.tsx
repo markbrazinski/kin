@@ -2,8 +2,38 @@
    Active state = bg-primary-soft + 2px primary left accent. Settings/Help
    intentionally omitted — rail is bimodal capture-vs-review per design ref
    nav-rail.jsx. */
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useState, useEffect } from 'react';
 import { IconMic, IconList } from './icons';
+
+const BADGE_BASE_CLS =
+  'absolute top-1.5 right-1.5 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-white text-[9px] font-semibold flex items-center justify-center leading-none';
+const BADGE_TICK_DURATION_MS = 200;  // animation is 150ms; small buffer
+
+/* Bundle 1.5 S5: badge with kin-badge-tick animation on count
+   INCREASE. animateKey is incremented by the parent when
+   queuedCount goes up; this component watches the key, applies the
+   kin-badge-tick class transiently, and clears it after the
+   animation finishes so a later decrease (which keeps animateKey
+   constant) renders the bare badge. */
+function BadgeSpan({ badge, animateKey }: { badge: number; animateKey: number }) {
+  const [animating, setAnimating] = useState(false);
+  const prevKeyRef = useRef(animateKey);
+  useEffect(() => {
+    if (animateKey !== prevKeyRef.current) {
+      prevKeyRef.current = animateKey;
+      setAnimating(true);
+      const handle = setTimeout(() => setAnimating(false), BADGE_TICK_DURATION_MS);
+      return () => clearTimeout(handle);
+    }
+    return undefined;
+  }, [animateKey]);
+
+  return (
+    <span className={`${BADGE_BASE_CLS}${animating ? ' kin-badge-tick' : ''}`}>
+      {badge > 9 ? '9+' : badge}
+    </span>
+  );
+}
 
 export type RailRoute = 'intake' | 'queue';
 
@@ -29,6 +59,20 @@ export function RailNav({ route, setRoute, queuedCount, syncOk = true }: RailNav
   ];
 
   const buttonsRef = useRef<Array<HTMLButtonElement | null>>([]);
+
+  /* Bundle 1.5 S5: kin-badge-tick on count INCREASE only. Decrease
+     (confirm/reject decrement) does NOT animate — count going down
+     should not pull worker attention. tickKey increments on each
+     detected increase; React's key prop forces a fresh mount of the
+     badge span so the CSS animation replays. */
+  const prevCountRef = useRef<number | undefined>(queuedCount);
+  const [tickKey, setTickKey] = useState(0);
+  useEffect(() => {
+    const prev = prevCountRef.current ?? 0;
+    const curr = queuedCount ?? 0;
+    if (curr > prev) setTickKey((k) => k + 1);
+    prevCountRef.current = queuedCount;
+  }, [queuedCount]);
 
   const onKeyDown = useCallback(
     (idx: number) => (e: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -81,9 +125,10 @@ export function RailNav({ route, setRoute, queuedCount, syncOk = true }: RailNav
               >
                 {it.icon}
                 {it.badge ? (
-                  <span className="absolute top-1.5 right-1.5 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-white text-[9px] font-semibold flex items-center justify-center leading-none">
-                    {it.badge > 9 ? '9+' : it.badge}
-                  </span>
+                  <BadgeSpan
+                    badge={it.badge}
+                    animateKey={it.key === 'queue' ? tickKey : 0}
+                  />
                 ) : null}
               </button>
             </li>

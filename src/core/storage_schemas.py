@@ -135,7 +135,17 @@ class AuditEvent(BaseModel):
     sequence (per Part 1 REV 4 §"Audit events at seed time").
 
     record_ids is a list because match_proposed / match_confirmed /
-    match_rejected events refer to two records simultaneously.
+    match_rejected events refer to two records simultaneously, EXCEPT
+    for empty-result match_proposed events (Bundle 1.5 S5) where the
+    list contains only the new record's id and candidate_count is 0.
+
+    candidate_count (Bundle 1.5 S5): For match_proposed events, the
+    total number of match candidates the matching trigger produced
+    for the new record. 0 for empty-result emissions; otherwise the
+    count of links created in this scoring run. Frontend
+    matchCandidates state derives the queue rail badge value from
+    this field. Defaulted to 0 so existing event types and JSONL
+    records remain valid (additive change).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -147,3 +157,4 @@ class AuditEvent(BaseModel):
     match_id: UUID | None = None
     actor: str = "kin_system"
     details: dict[str, Any] = Field(default_factory=dict)
+    candidate_count: int = 0

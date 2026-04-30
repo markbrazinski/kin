@@ -25,6 +25,7 @@ type MockAuditEvent = {
     match_id: string | null;
     actor: string;
     details: Record<string, unknown>;
+    candidate_count?: number;
   };
 };
 
@@ -66,17 +67,22 @@ vi.mock('./lib/api', () => ({
 
 import App from './App';
 
-function makeMatchProposedEvent(id: string): MockAuditEvent {
+function makeMatchProposedEvent(
+  id: string,
+  opts: { candidateCount?: number; recordIds?: string[] } = {},
+): MockAuditEvent {
+  const recordIds = opts.recordIds ?? ['rec-a', 'rec-b'];
   return {
     type: 'audit_event',
     payload: {
       id,
       at: new Date().toISOString(),
       event_type: 'match_proposed',
-      record_ids: ['rec-a', 'rec-b'],
+      record_ids: recordIds,
       match_id: 'match-' + id,
       actor: 'kin_system',
       details: {},
+      candidate_count: opts.candidateCount ?? 1,
     },
   };
 }
@@ -90,72 +96,51 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('App — Beat 6 MatchToast (S2-fix1)', () => {
-  it('match_proposed surfaces toast WITHOUT auto-navigating away from intake', () => {
+describe('App — Beat 6 match candidate badge (S5)', () => {
+  it('match_proposed arrival does NOT surface MatchToast (S2-fix2 closure regression)', () => {
+    /* Pre-S5: match_proposed surfaced a bottom-right toast with
+       "Match candidate found" + Open match / Dismiss buttons. S5
+       deletes MatchToast in favor of the queue rail badge. This
+       test guards against accidental re-introduction. */
     const { rerender, queryByText, queryByRole } = render(<App />);
-    // No match yet → no toast, view stays in single mode.
-    expect(queryByText('Match candidate found')).toBeNull();
-    expect(queryByText('Reunification candidate')).toBeNull();
-
-    // match_proposed arrives mid-intake.
-    mockAuditEvents = [makeMatchProposedEvent('e-1')];
+    mockAuditEvents = [makeMatchProposedEvent('e-1', { candidateCount: 2 })];
     rerender(<App />);
 
-    // Toast renders.
-    expect(queryByText('Match candidate found')).not.toBeNull();
-    // BUT view stays in single mode — user can keep recording the
-    // next utterance. This is the demo Beat 5 fix: multi-turn flows
-    // don't get hijacked by an auto-navigation.
+    expect(queryByText('Match candidate found')).toBeNull();
+    expect(queryByRole('button', { name: 'Open match' })).toBeNull();
+    expect(queryByRole('button', { name: 'Dismiss' })).toBeNull();
+    // View stays in single mode — multi-turn flow uninterrupted.
     expect(queryByText('Reunification candidate')).toBeNull();
-    // "Open match" button is present and waiting for the click.
-    expect(queryByRole('button', { name: 'Open match' })).not.toBeNull();
   });
 
-  it('clicking "Open match" navigates to match view and steps phase machine', () => {
-    const { rerender, queryByText } = render(<App />);
-    mockAuditEvents = [makeMatchProposedEvent('e-1')];
-    rerender(<App />);
+  it('match_proposed updates the queue rail badge via getActiveMatchCount', () => {
+    /* Bundle 1.5 S5: the new candidate-count flow drives the queue
+       rail badge. record_ids[0] is the new-record key per the
+       ordering convention; candidate_count > 0 contributes to
+       getActiveMatchCount. */
+    const { rerender, container } = render(<App />);
 
-    const openBtn = screen.getByRole('button', { name: 'Open match' });
-    act(() => { fireEvent.click(openBtn); });
+    // Initial: badge is hidden (no active candidates).
+    const queueBeforeBtn = screen.getByLabelText('Queue');
+    expect(queueBeforeBtn.querySelector('span.bg-primary.text-white')).toBeNull();
 
-    // View now in match mode (the "Reunification candidate" header
-    // is the unique anchor on the match view).
-    expect(queryByText('Reunification candidate')).not.toBeNull();
-    expect(queryByText('Match confirmed')).toBeNull();
-
-    // Toast dismissed itself on click.
-    expect(queryByText('Match candidate found')).toBeNull();
-
-    // Phase machine steps: split → linking at 400ms, → merged at 1100ms.
-    act(() => { vi.advanceTimersByTime(400); });
-    expect(queryByText('Match confirmed')).toBeNull();
-
-    act(() => { vi.advanceTimersByTime(700); });
-    expect(queryByText('Match confirmed')).not.toBeNull();
-  });
-
-  it('idempotent: a second match_proposed does NOT re-show the toast', () => {
-    const { rerender, queryByText } = render(<App />);
-
-    // First match_proposed → toast renders.
-    mockAuditEvents = [makeMatchProposedEvent('e-1')];
-    rerender(<App />);
-    expect(queryByText('Match candidate found')).not.toBeNull();
-
-    // User dismisses the toast.
-    const dismissBtn = screen.getByRole('button', { name: 'Dismiss' });
-    act(() => { fireEvent.click(dismissBtn); });
-    expect(queryByText('Match candidate found')).toBeNull();
-
-    // A second match_proposed arrives. matchToastFiredRef
-    // short-circuits the watcher; toast stays dismissed.
+    // match_proposed arrives with 1 candidate for intake "rec-a".
     mockAuditEvents = [
-      makeMatchProposedEvent('e-1'),
-      makeMatchProposedEvent('e-2'),
+      makeMatchProposedEvent('e-1', {
+        candidateCount: 1,
+        recordIds: ['rec-a', 'rec-b'],
+      }),
     ];
     rerender(<App />);
-    expect(queryByText('Match candidate found')).toBeNull();
+
+    // Badge now visible on the Queue button (RailNav renders a span
+    // with bg-primary + text-white when queuedCount is truthy).
+    const queueAfterBtn = screen.getByLabelText('Queue');
+    const badge = queueAfterBtn.querySelector('span.bg-primary.text-white');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe('1');
+
+    void container;
   });
 });
 

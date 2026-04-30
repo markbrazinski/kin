@@ -34,7 +34,7 @@ import structlog
 from pydantic import ValidationError
 
 from core import safety_rules
-from core.matching import match_records
+from core.matching import MatchResult, match_records
 from core.rfl_schema import (
     Age,
     Guardian,
@@ -696,25 +696,49 @@ async def _trigger_matching(
     ]
 
     new_rfl = _to_rfl_record(new_record)
-    created_links: list[MatchLink] = []
 
+    # Two-pass: first collect all matches so we know the run total,
+    # then emit each with candidate_count = total. Bundle 1.5 S5
+    # requires every match_proposed event to carry the run-level
+    # candidate count so the frontend state can derive the queue
+    # rail badge value without re-counting events.
+    matches: list[tuple[IntakeRecord, MatchResult]] = []
     for candidate in candidates:
         result = match_records(new_rfl, _to_rfl_record(candidate))
-        if not result.is_match:
-            continue
-        match_reasoning = {
-            "matched_fields": list(result.matched_fields),
-            "phonetic_score": result.phonetic_score,
-            "reason": result.reason,
-        }
-        link = storage.create_match_link(
-            record_a_id=new_record.id,
-            record_b_id=candidate.id,
-            confidence_band=result.confidence,
-            confidence_score=result.score,
-            match_reasoning=match_reasoning,
-        )
-        created_links.append(link)
+        if result.is_match:
+            matches.append((candidate, result))
+
+    created_links: list[MatchLink] = []
+    if matches:
+        candidate_count = len(matches)
+        for candidate, result in matches:
+            match_reasoning = {
+                "matched_fields": list(result.matched_fields),
+                "phonetic_score": result.phonetic_score,
+                "reason": result.reason,
+            }
+            # ORDERING CONVENTION (Bundle 1.5 S5): record_a_id is
+            # ALWAYS the new record being matched; record_b_id is the
+            # candidate counterparty. Downstream consumers (frontend
+            # match-candidate state, audit-event filters) depend on
+            # record_ids[0] being the new record. Do not swap without
+            # updating src/ui/web/src/state/matchCandidates.ts.
+            link = storage.create_match_link(
+                record_a_id=new_record.id,
+                record_b_id=candidate.id,
+                confidence_band=result.confidence,
+                confidence_score=result.score,
+                match_reasoning=match_reasoning,
+                candidate_count=candidate_count,
+            )
+            created_links.append(link)
+    else:
+        # Bundle 1.5 S5: always-emit on zero-result runs so the
+        # frontend matchCandidates state can confirm "this turn
+        # produced no candidates" rather than guessing from event
+        # absence. Single summary event with record_ids=[new_record_id]
+        # and candidate_count=0.
+        storage.emit_match_proposed_empty(new_record_id=new_record.id)
 
     log.info(
         "matching_trigger_fired",

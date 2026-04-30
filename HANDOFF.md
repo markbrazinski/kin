@@ -110,7 +110,7 @@ Every brief has a test budget range (e.g., 8-12). Hit the **floor**. Headroom ex
 - **No new state library** (Zustand etc). Reducer + hook composition via `useEventStream`.
 - **No new animation library** (Framer Motion etc). CSS keyframes for S7 merge animation.
 - **No new dependencies without escalation.** Both Python and React.
-- **No Core schema changes** during SSE work (Bundle 1). Additive Integration-layer changes are fine.
+- **No Core schema changes** during SSE work (Bundle 1). Additive Integration-layer changes are fine. **Bundle 1.5 S5 relaxation:** Lock 4's rationale is concurrent-write protection for JSONL audit logs, not absolute schema immutability. Backwards-compatible additive fields with default values are permitted (S5 added `AuditEvent.candidate_count: int = 0`; existing JSONL records remain valid because the field defaults to 0 on read).
 - **Single-writer JSONL storage.** Concurrent writes out of scope.
 - **127.0.0.1 localhost-only.** Never deployed. Reframed in writeup as "deliberate offline-first architecture."
 

@@ -156,8 +156,14 @@ async def test_ingest_audio_spanish_smoke(tmp_path: Path) -> None:
     assert "intake_paused" not in event_types
     assert "crisis_detected" not in event_types
     assert "referral_issued" not in event_types
-    # Fresh storage → matching trigger fires but produces no MatchLinks.
-    assert "match_proposed" not in event_types
+    # Bundle 1.5 S5: matching trigger now ALWAYS emits match_proposed.
+    # Fresh storage produces a summary event with record_ids=[new_id]
+    # and candidate_count=0; no MatchLinks are created.
+    proposed_events = [e for e in events if e.event_type == "match_proposed"]
+    assert len(proposed_events) == 1
+    assert proposed_events[0].candidate_count == 0
+    assert proposed_events[0].record_ids == [record.id]
+    assert proposed_events[0].match_id is None
 
     # No MatchLinks on fresh storage.
     assert storage.list_match_links() == []

@@ -188,8 +188,17 @@ class StorageAdapter:
         confidence_score: float,
         match_reasoning: dict[str, Any],
         proposed_by: str = "kin_matching_v1",
+        candidate_count: int = 1,
     ) -> MatchLink:
-        """Create + persist a proposed MatchLink. Emits match_proposed."""
+        """Create + persist a proposed MatchLink. Emits match_proposed.
+
+        candidate_count (Bundle 1.5 S5): the total number of links
+        created in this scoring run. Defaults to 1 (the single-link
+        case is most common) so existing test fixtures and callers
+        stay valid. Pipeline callers pass the run-level total so the
+        frontend matchCandidates state can derive the queue rail
+        badge value without re-counting events.
+        """
         link = MatchLink(
             id=uuid4(),
             record_a_id=record_a_id,
@@ -206,8 +215,31 @@ class StorageAdapter:
             event_type="match_proposed",
             record_ids=[record_a_id, record_b_id],
             match_id=link.id,
+            candidate_count=candidate_count,
         )
         return link
+
+    def emit_match_proposed_empty(
+        self,
+        new_record_id: UUID,
+    ) -> AuditEvent:
+        """Emit a match_proposed audit event for a zero-result run.
+
+        Bundle 1.5 S5: the matching trigger now ALWAYS emits
+        match_proposed after every scoring run, regardless of result.
+        For runs with at least one match, per-match events fire via
+        create_match_link (each carrying candidate_count = run total).
+        For zero-result runs, this helper emits a single summary
+        event with record_ids=[new_record_id] and candidate_count=0
+        so the frontend matchCandidates state can confirm "this turn
+        produced no candidates" rather than guessing from event
+        absence.
+        """
+        return self._append_audit_event(
+            event_type="match_proposed",
+            record_ids=[new_record_id],
+            candidate_count=0,
+        )
 
     def update_match_link_status(
         self,
@@ -293,6 +325,7 @@ class StorageAdapter:
         record_ids: list[UUID] | None = None,
         match_id: UUID | None = None,
         details: dict[str, Any] | None = None,
+        candidate_count: int = 0,
     ) -> AuditEvent:
         event = AuditEvent(
             id=uuid4(),
@@ -302,6 +335,7 @@ class StorageAdapter:
             match_id=match_id,
             actor=self._actor,
             details=details or {},
+            candidate_count=candidate_count,
         )
         self._append_jsonl(self._dir / AUDIT_FILE, event)
         return event

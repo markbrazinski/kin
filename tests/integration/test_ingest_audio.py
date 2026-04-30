@@ -441,11 +441,21 @@ async def test_ingest_audio_match_fires_on_second_mohamad_ingest(
     assert link.confidence_band == "high"  # same-script-exact + age + relationship
     assert link.proposed_by == "kin_matching_v1"
 
-    # match_proposed audit event present, references both records.
+    # Bundle 1.5 S5: matching trigger now ALWAYS emits match_proposed.
+    # First ingest (record_a) triggered an empty-result run that
+    # emitted a summary event with record_ids=[record_a.id] and
+    # candidate_count=0; this second ingest's per-match emission
+    # adds a second event with both records and candidate_count=1.
     proposed_events = storage.list_audit_events(event_type="match_proposed")
-    assert len(proposed_events) == 1
-    assert set(proposed_events[0].record_ids) == {record_a.id, record_b.id}
-    assert proposed_events[0].match_id == link.id
+    assert len(proposed_events) == 2
+    # The first event is the empty summary from record_a's ingest.
+    assert proposed_events[0].record_ids == [record_a.id]
+    assert proposed_events[0].candidate_count == 0
+    assert proposed_events[0].match_id is None
+    # The second event is the per-match emission from this ingest.
+    assert set(proposed_events[1].record_ids) == {record_a.id, record_b.id}
+    assert proposed_events[1].candidate_count == 1
+    assert proposed_events[1].match_id == link.id
 
     # matching_trigger_fired emitted with match_count=1 on the second
     # ingest. (The first ingest also fired it with match_count=0, but
