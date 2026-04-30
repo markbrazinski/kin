@@ -15,16 +15,24 @@ import { StructlogSidebar } from './StructlogSidebar';
 import { IconLock } from './icons';
 import { useEventStream, type EventSourceFactory } from '../hooks/useEventStream';
 import { useMicCapture } from '../hooks/useMicCapture';
+import {
+  useVoicePhase,
+  type PostStatus,
+} from '../hooks/useVoicePhase';
 import { formatTimestamp, type Tent } from '../lib/formatters';
 import { containsNonLatinScript } from '../lib/script';
 import { uploadAudioBlob } from '../lib/api';
+import { voiceCopy } from '../lib/voiceCopy';
+import { t } from '../lib/i18n';
+import type {
+  AuditEnvelope,
+  StructlogEnvelope,
+} from '../lib/sseEnvelope';
 import type {
   CompletenessSegment,
   Language,
   RecordData,
 } from '../lib/types';
-
-type Phase = 'ready' | 'recording' | 'processing' | 'done';
 
 export type IntakePanelProps = {
   /* Optional — when undefined, the underlying SSE stream is unfiltered. */
@@ -33,12 +41,14 @@ export type IntakePanelProps = {
      passes 'a' or 'b' explicitly. */
   tent?: Tent;
   panelLabel?: string;
-  /* Shared, App-level state passed in by the parent. */
-  lang: Language;
-  phase: Phase;
+  /* Bundle 1.5 S6 split: workerLanguage drives chrome (caption +
+     button labels in SimpleVoicePanel). speakerLanguage is the
+     language Whisper/Gemma/safety see via the POST and the chip
+     metadata showing what the speaker is saying. */
+  workerLanguage: Language;
+  speakerLanguage: Language;
   timerSec: number;
   timerRunning: boolean;
-  onBegin: () => void;
   crisisOpen: boolean;
   /* Test DI seam — optional. */
   eventSourceFactory?: EventSourceFactory;
@@ -61,11 +71,10 @@ export function IntakePanel({
   sourceDeviceId,
   tent = 'a',
   panelLabel = 'Intake',
-  lang,
-  phase,
+  workerLanguage,
+  speakerLanguage,
   timerSec,
   timerRunning,
-  onBegin,
   crisisOpen,
   eventSourceFactory,
   fallbackRecord,
@@ -155,12 +164,15 @@ export function IntakePanel({
       </div>
 
       {/* Voice panel: simplified, mic-capture-driven (S5). Begin/Stop
-          internalizes useMicCapture; ignores App-level onBegin prop. */}
+          internalizes useMicCapture. */}
       <div className="mb-5">
         <SimpleVoicePanel
-          lang={lang}
+          workerLanguage={workerLanguage}
+          speakerLanguage={speakerLanguage}
           sourceDeviceId={sourceDeviceId}
           intakeId={state.intakeId}
+          auditEvents={state.auditEvents}
+          structlogEvents={state.structlogEvents}
         />
       </div>
 
@@ -224,13 +236,22 @@ export function IntakePanel({
    existing one (subsequent turns).
 */
 function SimpleVoicePanel({
-  lang,
+  workerLanguage,
+  speakerLanguage,
   sourceDeviceId,
   intakeId,
+  auditEvents,
+  structlogEvents,
 }: {
-  lang: Language;
+  /* S6 split: workerLanguage drives caption + button labels;
+     speakerLanguage flows to the POST and surfaces as the chip
+     metadata showing what language the speaker is using. */
+  workerLanguage: Language;
+  speakerLanguage: Language;
   sourceDeviceId: string | undefined;
   intakeId: string | null;
+  auditEvents: AuditEnvelope[];
+  structlogEvents: StructlogEnvelope[];
 }) {
   /* Read intake_id from a ref so the most-recent value is used on
      stop, not whatever was current at render-time. */
@@ -238,8 +259,9 @@ function SimpleVoicePanel({
   intakeIdRef.current = intakeId;
 
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [lastPostStatus, setLastPostStatus] = useState<PostStatus | null>(null);
 
-  const { state, start, stop, error } = useMicCapture({
+  const { state: micState, start, stop, error } = useMicCapture({
     onStop: async (blob) => {
       if (!sourceDeviceId) {
         setUploadError(
@@ -248,34 +270,53 @@ function SimpleVoicePanel({
         return;
       }
       try {
-        await uploadAudioBlob({
+        const resp = await uploadAudioBlob({
           blob,
-          lang,
+          lang: speakerLanguage,
           sourceDeviceId,
           intakeId: intakeIdRef.current,
         });
         setUploadError(null);
+        setLastPostStatus(
+          resp.status === 'paused_for_crisis' ? 'paused_for_crisis' : 'completed',
+        );
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : String(err));
       }
     },
   });
 
-  const phaseLabel =
-    state === 'idle'
-      ? 'Ready'
-      : state === 'recording'
-        ? 'Recording'
-        : state === 'processing'
-          ? 'Processing'
-          : 'Error';
+  const { phase, onBegin: phaseBegin, onStop: phaseStop } = useVoicePhase({
+    micState,
+    auditEvents,
+    structlogEvents,
+    lastPostStatus,
+  });
+
+  const caption = voiceCopy[phase].en;
+  const showBegin = phase === 'ready' || phase === 'done';
+  const showStop = phase === 'recording';
+
+  const handleBegin = () => {
+    phaseBegin();
+    setLastPostStatus(null);
+    void start();
+  };
+  const handleStop = () => {
+    phaseStop();
+    stop();
+  };
 
   return (
     <div className="flex items-center justify-between p-3 bg-card border border-line rounded-kin">
       <div className="flex items-center gap-3">
-        <div className="text-[14px] font-medium text-ink">{phaseLabel}</div>
+        <div className="text-[14px] font-medium text-ink" aria-live="polite">
+          {caption}
+        </div>
+        {/* Chip showing what language the speaker is using —
+            metadata about the speaker, not chrome. */}
         <div className="text-[12px] text-muted uppercase tracking-wider">
-          {lang}
+          {speakerLanguage}
         </div>
         {(error ?? uploadError) && (
           <div className="text-[12px] text-red">
@@ -284,26 +325,21 @@ function SimpleVoicePanel({
         )}
       </div>
       <div className="flex items-center gap-3">
-        {state === 'idle' || state === 'error' ? (
+        {showBegin ? (
           <button
-            onClick={() => {
-              void start();
-            }}
+            onClick={handleBegin}
             className="text-[12px] font-medium text-primary hover:text-primary-2"
           >
-            Begin
+            {t('voice.begin', workerLanguage)}
           </button>
         ) : null}
-        {state === 'recording' ? (
+        {showStop ? (
           <button
-            onClick={stop}
+            onClick={handleStop}
             className="text-[12px] font-medium text-red hover:opacity-80"
           >
-            Stop
+            {t('voice.stop', workerLanguage)}
           </button>
-        ) : null}
-        {state === 'processing' ? (
-          <span className="text-[12px] text-muted">Uploading…</span>
         ) : null}
       </div>
     </div>

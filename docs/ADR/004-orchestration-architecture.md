@@ -235,6 +235,103 @@ remove for cleanliness?" Reverting is straightforward (remove
 `_persist_crisis_record` falls back automatically). The work to
 revert is small; the work to re-add was bounded and intentional.
 
+## REV 3 — `locale_aware_message` also rides the POST response (S6-fix2, 2026-04-29)
+
+**Status:** Accepted
+
+### Change
+
+REV 2 stated that `locale_aware_message` "rides on the existing
+structlog → SSE bridge to the frontend." That channel is wired and
+unchanged: `crisis_referral_formatted` is emitted with the message
+at `transcription_pipeline.py:443-449`, broadcast verbatim by
+`sse.py`, and surfaced in the frontend structlog sidebar.
+
+REV 3 adds a **second delivery channel**: `ingest_audio` now returns
+`tuple[IntakeRecord, str | None]` (the optional message is non-None
+only on the crisis branch), and the `/intake/audio` POST handler
+surfaces it on its response model `AudioUploadResponse` when
+`status="paused_for_crisis"`. The frontend overlay
+(`CrisisReferralCard`) reads the message from the synchronous POST
+response and renders it as the displaced-person-facing body, with
+`CRISIS_COPY[lang].body` as the fallback when no message is
+provided (Gemma tool_call failure → `_format_crisis_referral`
+returns `""` → normalized to `None` → component falls back).
+
+The message remains **ephemeral**: not written to `IntakeRecord`,
+not written to `audit_events.jsonl`, not written to any persistent
+store. Both the SSE event and the POST response carry it across
+the request/response cycle only.
+
+### Why this is not a regression
+
+The POST response channel and the SSE channel are independent
+deliveries of the same payload. Neither persists. The ephemerality
+lock from REV 2 is constraint on **storage**, not on transient
+delivery channels — and was always ambiguous about whether the SSE
+channel was the only allowed transport.
+
+The deterministic safety gate is unchanged: `safety_rules.classify`
+still decides the crisis branch, Gemma is still formatter-only,
+fallback to `_REFERRAL_ORG_BY_LANG` and empty message still holds
+on tool_call failure.
+
+The only architectural shift is the route handler unpacking a
+two-tuple instead of a single record. All other `ingest_audio`
+callers (today: tests only) update to the same unpack.
+
+### Why two channels instead of one
+
+The overlay needs the message at open time. The POST response is
+synchronous with the trigger that opens the overlay (the crisis
+status discriminator). SSE arrivals are not ordered against the
+POST response — the structlog event for `crisis_referral_formatted`
+fires on the backend during `_format_crisis_referral` (before the
+route returns), but its arrival at the frontend SSE consumer is
+network-bound and asynchronous. The race window is small (~5-50ms
+on localhost) but real, and produces user-visible artifacts: the
+overlay either opens with empty body and pops in the message, or
+opens before the message lands and looks broken.
+
+Anchoring the overlay-open trigger to the POST response makes the
+trigger-and-content arrive atomically. The SSE channel stays for
+two reasons: (1) it backs the structlog sidebar, which is a
+demo-credibility surface ("you can see Gemma's tool call landing
+live"); (2) it is the documented reversion path if a future review
+prefers the simpler architecture.
+
+### Why this is reversible
+
+Removing the POST response channel is a deletion:
+
+1. Revert `ingest_audio` to return `IntakeRecord` (drop the tuple)
+2. Drop the optional `locale_aware_message` field from
+   `AudioUploadResponse` and the route handler's status-gated
+   population
+3. Drop the optional `message` prop from `CrisisReferralCard`
+4. Drop the App-level `crisisMessage` state and the
+   `onCrisisResponse` callback wiring; the SSE consumer reads the
+   message from the `crisis_referral_formatted` structlog event
+   payload that already arrives via `useEventStream`
+
+The structlog event is unchanged across REV 2 / REV 3, so the SSE
+fallback path requires no backend touch on revert.
+
+### Forward note for future agents
+
+REV 3 does NOT relax the ephemerality lock. If you find yourself
+adding `locale_aware_message` to `IntakeRecord`, `AuditEvent.details`,
+JSONL, or any other persistent store, you are violating REV 2 — not
+REV 3. The two transient channels (SSE event payload, POST response)
+are the only places this string may appear.
+
+The Gap 3 fix that ships with REV 3 (clearing `intakeId` after a
+crisis turn so the next turn takes the create-path, see
+`transcription_pipeline.py:258-266`) is part of the wiring commit,
+not part of this ADR — it preserves S5 lock #4 (crisis path is
+create-only) by ensuring the frontend never POSTs an `intake_id`
+referencing a `paused_for_crisis` record.
+
 ## References
 
 - Part 1 REV 4 (storage state spec): `intake_record` fields,

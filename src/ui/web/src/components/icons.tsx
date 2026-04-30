@@ -49,10 +49,11 @@ const IconSparkle   = (p: IconProps) => <Icon {...p}><path d="M12 3v4"/><path d=
 const IconRotate    = (p: IconProps) => <Icon {...p}><path d="M4 12a8 8 0 0 1 14-5.3L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-14 5.3L4 16"/><path d="M4 20v-4h4"/></Icon>;
 const IconTerminal  = (p: IconProps) => <Icon {...p}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M12 15h5"/></Icon>;
 const IconClock     = (p: IconProps) => <Icon {...p}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></Icon>;
+const IconList      = (p: IconProps) => <Icon {...p}><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><circle cx="4" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1" fill="currentColor" stroke="none"/></Icon>;
 
 export {
   Icon, IconMic, IconPlay, IconPause, IconShield, IconLock, IconCloudOff, IconCheck,
   IconAlert, IconInfo, IconArrowRight, IconChevron, IconLanguages, IconUser,
   IconMapPin, IconCamera, IconDev, IconX, IconLink, IconSparkle, IconRotate,
-  IconTerminal, IconClock,
+  IconTerminal, IconClock, IconList,
 };

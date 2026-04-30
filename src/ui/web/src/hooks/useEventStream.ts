@@ -29,12 +29,18 @@ export type UseEventStreamOptions = {
   sourceDeviceId?: string;
   basePath?: string;
   eventSourceFactory?: EventSourceFactory;
+  /* When false, no EventSource is opened. Used by App.tsx to suppress the
+     unfiltered App-level subscription while in split view, where each
+     IntakePanel owns its own filtered stream. Default true preserves the
+     existing single-view behavior. */
+  enabled?: boolean;
 };
 
 export type UseEventStreamResult = {
   state: EventStreamState;
   connection: ConnectionState;
   reset: () => void;
+  clearIntakeId: () => void;
 };
 
 function buildUrl(basePath: string, sourceDeviceId?: string): string {
@@ -50,6 +56,7 @@ export function useEventStream(
     sourceDeviceId,
     basePath = '/intake/stream',
     eventSourceFactory = defaultFactory,
+    enabled = true,
   } = opts;
 
   const [state, dispatch] = useReducer(eventReducer, INITIAL_STATE);
@@ -60,6 +67,7 @@ export function useEventStream(
   dispatchRef.current = dispatch;
 
   useEffect(() => {
+    if (!enabled) return;
     const url = buildUrl(basePath, sourceDeviceId);
     dispatchRef.current({ type: 'connection', value: 'connecting' });
     const es = eventSourceFactory(url);
@@ -102,15 +110,20 @@ export function useEventStream(
       es.close();
       dispatchRef.current({ type: 'connection', value: 'closed' });
     };
-  }, [sourceDeviceId, basePath, eventSourceFactory]);
+  }, [sourceDeviceId, basePath, eventSourceFactory, enabled]);
 
   const reset = useCallback(() => {
     dispatchRef.current({ type: 'reset' });
+  }, []);
+
+  const clearIntakeId = useCallback(() => {
+    dispatchRef.current({ type: 'clear_intake_id' });
   }, []);
 
   return {
     state,
     connection: state.connection,
     reset,
+    clearIntakeId,
   };
 }

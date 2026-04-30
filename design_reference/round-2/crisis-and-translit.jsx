@@ -1,59 +1,47 @@
-/* Crisis referral card + Transliteration-match view. */
-import React from 'react';
-import type { ReactNode } from 'react';
-import { IconAlert, IconPause, IconPlay, IconInfo, IconLock, IconArrowRight, IconLink, IconCheck } from './icons';
-import { Button, Chip, Waveform } from './primitives';
-import type { Language, MatchPhase } from '../lib/types';
-import { dirFor, t } from '../lib/i18n';
+/* ============================================================================
+ * KIN — crisis-and-translit.jsx (CrisisReferralCard + TransliterationMatch)
+ * ----------------------------------------------------------------------------
+ * ADAPTATION NOTES FOR CC:
+ *
+ *   CrisisReferralCard (Round 2 verdict: CANONICAL — do not redesign)
+ *   • DO NOT CHANGE: this is the ONLY place `shadow-elevated` is used in
+ *     the entire system. Crisis is the highest-elevation surface; nothing
+ *     else may share it. If you find yourself adding shadow-elevated
+ *     elsewhere, reach for border-line first.
+ *   • DO NOT CHANGE: red is used as ICON + TEXT + thin accent rule, never
+ *     as a filled background surface. The red-soft chip in the header is
+ *     the maximum red surface allowed. This was a Round 1 lock.
+ *   • DO NOT CHANGE: the two dismissal buttons. They are explicitly
+ *     "De-escalated — continue intake" and "Referral provided" — both
+ *     LOGGED separately. There is no generic Close button. Both outcomes
+ *     have meaning for the audit trail.
+ *   • CRISIS_COPY (en/es/ar/fa) is the canonical localized copy. Do not
+ *     paraphrase for tone — these strings were chosen for plain-language
+ *     calm. If product wants new languages added, the pattern is dir+title
+ *     +body+hotline+play; mirror exactly.
+ *   • The card is positioned `fixed left-1/2 top-[140px]` and rises via
+ *     kin-rise. It does NOT modal-block the page — the record card behind
+ *     dims (opacity-50) but stays mounted. This preserves spatial context.
+ *
+ *   TransliterationMatch
+ *   • The `phase` state machine is 'split' → 'linking' → 'merged'. Driven
+ *     by real algorithm output in production (jaro-winkler + transliteration
+ *     bridge), simulated here via setTimeout. Wire to your match service.
+ *   • VIEWPORT FIX FOR BUNDLE 1.5: the merged card's grid currently uses
+ *     `grid-cols-2 md:grid-cols-3` — change to `grid-cols-2 xl:grid-cols-3`
+ *     so that <1400px viewports (1366×768 laptops) don't cramp the columns.
+ *     This is the ~10-line fix mentioned in the design Q&A. Fold into the
+ *     match-view session, not a separate task.
+ *   • The MiniRecord tone prop (warm/cool) provides subtle differentiation
+ *     between Intake A and Intake B — these are oklch warm-neutral and
+ *     cool-neutral PAPER tints, not primary color. Don't escalate to
+ *     primary/amber for "stronger" differentiation in this match view —
+ *     the differentiation belongs in the SPLIT view (different file/work).
+ * ============================================================================
+ * Crisis referral card + Transliteration-match view. */
 
-type CrisisCopyEntry = {
-  dir: 'ltr' | 'rtl';
-  title: string;
-  body: string;
-  hotline: string;
-  play: string;
-};
-
-export type CrisisReferralCardProps = {
-  /* Bundle 1.5 S6 split: chrome (small red header + dismiss buttons)
-     reads workerLanguage; the displaced-person-facing surface (BIG
-     title, body, hotline, play button) reads speakerLanguage. The
-     speaker surface also gets dir attribute from speakerLanguage so
-     RTL applies only to that section, not the operator chrome. */
-  workerLanguage: Language;
-  speakerLanguage: Language;
-  /* Gemma escalate_crisis tool's locale_aware_message (per ADR-004
-     REV 3). When absent or whitespace-only, falls back to
-     CRISIS_COPY[speakerLanguage].body — covers the demo button,
-     Gemma tool_call failure, and any non-POST-driven open path. */
-  message?: string | null;
-  onResolved: () => void;
-  onDeEscalated: () => void;
-};
-
-type MiniRecordTone = 'warm' | 'cool';
-
-type MiniRecordProps = {
-  title: ReactNode;
-  tone: MiniRecordTone;
-  reporter: ReactNode;
-  missingName: ReactNode;
-  missingScript: ReactNode;
-  age: ReactNode;
-  lastSeen: ReactNode;
-  circumstance: ReactNode;
-};
-
-export type TransliterationMatchProps = {
-  phase: MatchPhase;
-  onBack: () => void;
-};
-
-/* Localized crisis copy. Drives the displaced-person-facing surface
-   (title, body fallback when Gemma's locale_aware_message is absent,
-   hotline label, play-button label). Dir attribute on the body
-   element comes from dirFor(speakerLanguage) — see component below. */
-const CRISIS_COPY: Record<Language, CrisisCopyEntry> = {
+// Localized crisis copy. English stays as reference; the other three are the displaced-person UI.
+const CRISIS_COPY = {
   en: { dir: "ltr", title: "Help is available",
         body: "You are safe here. Trained support is available right now, in your language. Would you like to listen to a short message?",
         hotline: "IFRC Regional Support Line",
@@ -70,63 +58,42 @@ const CRISIS_COPY: Record<Language, CrisisCopyEntry> = {
         body: "شما اینجا در امان هستید. همین حالا، به زبان شما، پشتیبانی در دسترس است. آیا می‌خواهید یک پیام کوتاه بشنوید؟",
         hotline: "خط پشتیبانی منطقه‌ای IFRC",
         play: "پخش به فارسی" },
-  fr: { dir: "ltr", title: "De l'aide est disponible",
-        body: "Vous êtes en sécurité ici. Un soutien formé est disponible dès maintenant, dans votre langue. Souhaitez-vous écouter un court message ?",
-        hotline: "Ligne d'appui régional FICR",
-        play: "Écouter en français" },
-  uk: { dir: "ltr", title: "Допомога доступна",
-        body: "Ви тут у безпеці. Кваліфікована підтримка доступна прямо зараз, вашою мовою. Бажаєте прослухати коротке повідомлення?",
-        hotline: "Регіональна лінія підтримки МФЧХ",
-        play: "Прослухати українською" },
 };
 
-function CrisisReferralCard({
-  workerLanguage,
-  speakerLanguage,
-  message,
-  onResolved,
-  onDeEscalated,
-}: CrisisReferralCardProps) {
-  const copy = CRISIS_COPY[speakerLanguage] || CRISIS_COPY.en;
-  const body = message && message.trim() ? message : copy.body;
+function CrisisReferralCard({ lang, onResolved, onDeEscalated }) {
+  const copy = CRISIS_COPY[lang] || CRISIS_COPY.en;
   const [playing, setPlaying] = React.useState(false);
-  const speakerDir = dirFor(speakerLanguage);
-  const rtl = speakerDir === "rtl";
+  const rtl = copy.dir === "rtl";
 
   React.useEffect(() => {
     if (!playing) return;
-    const handle = setTimeout(() => setPlaying(false), 3200);
-    return () => clearTimeout(handle);
+    const t = setTimeout(() => setPlaying(false), 3200);
+    return () => clearTimeout(t);
   }, [playing]);
 
   return (
     <div
       role="dialog"
       aria-label="Crisis referral"
-      dir={dirFor(workerLanguage)}
       className="kin-rise fixed left-1/2 top-[140px] z-30 w-[min(640px,calc(100%-48px))] bg-card border border-line rounded-kin-lg shadow-elevated"
       style={{ transform: "translateX(-50%)" }}
     >
-      {/* Operator-facing chrome: red header + subtitle. Stays in
-          workerLanguage so the aid worker reads instructions in
-          their own UI language regardless of speakerLanguage. */}
+      {/* Header: red used sparingly (icon + thin accent rule), not as a background */}
       <div className="border-b border-hair px-6 py-4 flex items-center gap-3">
         <div className="w-9 h-9 rounded-kin border border-red/30 bg-red-soft text-red flex items-center justify-center">
           <IconAlert size={18} />
         </div>
         <div>
-          <div className="text-[12px] font-medium uppercase tracking-wider text-red">{t('crisis.title', workerLanguage)}</div>
-          <div className="text-[14px] text-muted">{t('crisis.subtitle', workerLanguage)}</div>
+          <div className="text-[12px] font-medium uppercase tracking-wider text-red">Crisis signal detected</div>
+          <div className="text-[14px] text-muted">Primary record paused. Surface this card to the person in front of you.</div>
         </div>
       </div>
 
-      {/* Displaced-person-facing surface — speakerLanguage drives
-          BIG title, body (Gemma's locale_aware_message or fallback),
-          hotline, play button. dir attribute on this section only. */}
-      <div dir={speakerDir} className={`px-6 py-5 ${rtl ? "rtl" : ""}`}>
+      {/* Displaced-person-facing surface */}
+      <div className={`px-6 py-5 ${rtl ? "rtl" : ""}`}>
         <div className="text-[26px] font-semibold text-ink leading-tight">{copy.title}</div>
         <p className="mt-2 text-[17px] text-ink/90 leading-relaxed" style={{ textWrap: "pretty" }}>
-          {body}
+          {copy.body}
         </p>
 
         <div className="mt-4 border border-line rounded-kin p-4 bg-subtle/60">
@@ -152,20 +119,17 @@ function CrisisReferralCard({
         </div>
       </div>
 
-      {/* Operator chrome: dismissal buttons. Two explicit logged
-          actions, no generic Close (QA-3 lock). Routed through
-          t(workerLanguage) so v1.1 worker_language toggle can
-          localize without touching this code. */}
+      {/* Dismissal: two explicit logged actions, no generic Close. */}
       <div className="border-t border-hair bg-subtle/60 px-6 py-3 flex flex-col sm:flex-row gap-2 sm:justify-end">
-        <Button variant="secondary" onClick={onDeEscalated}>{t('crisis.deescalated', workerLanguage)}</Button>
-        <Button variant="confirm" icon={<IconCheck size={16} />} onClick={onResolved}>{t('crisis.referralProvided', workerLanguage)}</Button>
+        <Button variant="secondary" onClick={onDeEscalated}>De-escalated — continue intake</Button>
+        <Button variant="confirm" icon={<IconCheck size={16} />} onClick={onResolved}>Referral provided</Button>
       </div>
     </div>
   );
 }
 
 // --- Transliteration match view ------------------------------------------
-function MiniRecord({ title, tone, reporter, missingName, missingScript, age, lastSeen, circumstance }: MiniRecordProps) {
+function MiniRecord({ title, tone, name, script, age, lastSeen, circumstance }) {
   const toneBg = tone === "warm" ? "bg-[oklch(0.985_0.012_75)]" : "bg-[oklch(0.985_0.006_220)]";
   return (
     <div className={`flex-1 border border-line rounded-kin-lg ${toneBg}`}>
@@ -174,15 +138,11 @@ function MiniRecord({ title, tone, reporter, missingName, missingScript, age, la
         <Chip icon={<IconLock size={12} />} tone="neutral" className="!bg-white">Local only</Chip>
       </div>
       <div className="px-5 py-4">
-        <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Reporter</div>
-        <div className="text-[15px] text-ink mt-0.5">{reporter}</div>
-
-        <div className="mt-4 text-[12px] font-medium uppercase tracking-wider text-muted">Missing child</div>
+        <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Name</div>
         <div className="mt-1 flex items-baseline gap-3">
-          <div className="text-[20px] font-semibold text-ink">{missingName}</div>
-          <div className="rtl text-[20px] text-ink/80">{missingScript}</div>
+          <div className="text-[20px] font-semibold text-ink">{name}</div>
+          <div className="rtl text-[20px] text-ink/80">{script}</div>
         </div>
-
         <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3">
           <div>
             <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Age</div>
@@ -202,10 +162,8 @@ function MiniRecord({ title, tone, reporter, missingName, missingScript, age, la
   );
 }
 
-function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
-  // 'split'   → two MiniRecord cards side by side, no link drawn
-  // 'linking' → Y-shape link animates toward the match card
-  // 'merged'  → MATCH CONFIRMED card with unified identity
+function TransliterationMatch({ phase, onBack }) {
+  // phase: 'split' -> both cards + link drawing -> 'merged'
   const showLink = phase === "linking" || phase === "merged";
   const merged   = phase === "merged";
 
@@ -225,55 +183,46 @@ function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
         <MiniRecord
           title="Intake A · Session #089"
           tone="warm"
-          reporter="Layla Al-Saleh · Mother"
-          missingName="Omar Al-Saleh"
-          missingScript="عمر الصالح"
-          age="9"
-          lastSeen="Ar-Raqqa outskirts · ~6 days ago"
-          circumstance="Separated during crowd surge leaving the neighbourhood"
+          name="Mohammed Al-Saleh"
+          script="محمد الصالح"
+          age="34 (self)"
+          lastSeen="Border crossing, Jordan"
+          circumstance="Separated from spouse and son during transit"
         />
         <MiniRecord
           title="Intake B · Session #147"
           tone="cool"
-          reporter="Yousef Al-Saleh · Father"
-          missingName="Umar Alsaleh"
-          missingScript="عمر الصالح"
-          age="9"
-          lastSeen="Ar-Raqqa outskirts · ~6 days ago"
-          circumstance="Lost sight of him near the transit checkpoint"
+          name="Mohamad Alsaleh"
+          script="محمد الصالح"
+          age="searching for brother"
+          lastSeen="Zaatari reception area"
+          circumstance="Looking for sibling last seen at border"
         />
       </div>
 
-      {/* Animated Y-shape connector: two streams from the intake panel
-          bottoms converging to the top edge of the Match Confirmed card. */}
-      <div className="relative h-20 mt-2 mb-0">
+      {/* Animated link / arrow */}
+      <div className="relative h-20 my-2">
         {showLink && (
           <svg viewBox="0 0 400 80" className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
             <path
-              d="M 80 0 C 80 40, 200 40, 200 80"
+              d="M 80 10 C 120 60, 280 60, 320 10"
               fill="none"
               stroke="oklch(0.55 0.11 155)"
               strokeWidth="1.5"
-              strokeLinecap="round"
-              pathLength={60}
+              strokeDasharray="4 4"
               className="kin-link-draw"
             />
-            <path
-              d="M 320 0 C 320 40, 200 40, 200 80"
-              fill="none"
-              stroke="oklch(0.55 0.11 155)"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              pathLength={60}
-              className="kin-link-draw"
-            />
+            <circle cx="200" cy="40" r="14" fill="oklch(0.96 0.03 155)" stroke="oklch(0.55 0.11 155)" strokeWidth="1" />
+            <g transform="translate(192,32)">
+              <path d="M3 4 L7 8 L13 2" fill="none" stroke="oklch(0.55 0.11 155)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </g>
           </svg>
         )}
       </div>
 
       {/* Merged card */}
       {merged && (
-        <div className="kin-rise kin-merge-pulse relative bg-card border border-green/40 rounded-kin-lg" style={{ transform: "none" }}>
+        <div className="kin-rise relative bg-card border border-green/40 rounded-kin-lg" style={{ transform: "none" }}>
           <div className="px-6 py-4 border-b border-hair bg-green-soft/60 flex items-center gap-3">
             <div className="w-8 h-8 rounded-kin bg-white border border-green/40 text-green flex items-center justify-center">
               <IconLink size={16} />
@@ -285,33 +234,33 @@ function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
             <div className="ml-auto"><Chip icon={<IconCheck size={12} />} tone="green">Pending caseworker review</Chip></div>
           </div>
           <div className="px-6 py-5">
-            <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Unified identity · missing child</div>
+            <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Unified identity</div>
             <div className="mt-2 flex flex-wrap items-baseline gap-x-6 gap-y-1">
-              <div className="rtl text-[28px] font-semibold text-ink">عمر الصالح</div>
-              <div className="text-[22px] text-ink">Omar Al-Saleh</div>
-              <div className="text-[16px] text-muted">· also: Umar Alsaleh</div>
+              <div className="rtl text-[28px] font-semibold text-ink">محمد الصالح</div>
+              <div className="text-[22px] text-ink">Mohammed Al-Saleh</div>
+              <div className="text-[16px] text-muted">· also: Mohamad Alsaleh</div>
             </div>
 
             <div className="mt-5 grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-4">
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Source script</div>
-                <div className="rtl text-[17px] text-ink mt-0.5">عمر الصالح</div>
+                <div className="rtl text-[17px] text-ink mt-0.5">محمد الصالح</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Phonetic variants</div>
-                <div className="text-[15px] text-ink mt-0.5">Omar · Umar</div>
-              </div>
-              <div>
-                <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Age</div>
-                <div className="text-[15px] text-ink mt-0.5">9</div>
+                <div className="text-[15px] text-ink mt-0.5">Mohammed · Mohamad</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Linked sessions</div>
-                <div className="text-[15px] text-ink mt-0.5">#089 (Mother) · #147 (Father)</div>
+                <div className="text-[15px] text-ink mt-0.5">#089 · #147</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Relationship signal</div>
+                <div className="text-[15px] text-ink mt-0.5">Sibling (self-identified ↔ searched)</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Last-seen overlap</div>
-                <div className="text-[15px] text-ink mt-0.5">Ar-Raqqa outskirts · ~6 days ago</div>
+                <div className="text-[15px] text-ink mt-0.5">Jordan border corridor</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Next step</div>
@@ -325,4 +274,4 @@ function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
   );
 }
 
-export { CrisisReferralCard, TransliterationMatch, CRISIS_COPY };
+Object.assign(window, { CrisisReferralCard, TransliterationMatch, CRISIS_COPY });

@@ -219,14 +219,23 @@ async def ingest_audio(
     ollama: _OllamaPort,
     storage: StorageAdapter,
     intake_id: UUID | None = None,
-) -> IntakeRecord:
-    """End-to-end ingest: audio → IntakeRecord with audit trail.
+) -> tuple[IntakeRecord, str | None]:
+    """End-to-end ingest: audio → (IntakeRecord, locale_aware_message).
 
     intake_id=None (S4 default): create a new partial record with
     extracted fields. intake_id=X (S5 extend path): read record X,
     merge new turn's extracted fields, fire matching re-trigger if
     identity-bearing fields changed. The crisis path is create-only;
     extending into a crisis turn raises ValueError.
+
+    Returns a 2-tuple. The second element is `locale_aware_message`,
+    Gemma's escalate_crisis short message in the speaker's language.
+    It is non-None ONLY on the crisis branch and ONLY when the
+    Gemma tool_call succeeded (fallback returns None). The route
+    layer surfaces it on the synchronous POST response so the crisis
+    overlay can open with body text atomic to the trigger; see
+    ADR-004 REV 3. The message is ephemeral — not persisted to
+    IntakeRecord, AuditEvent, or JSONL (REV 2 ephemerality lock).
 
     Failure mode: any upstream exception (Whisper PaddingFailed,
     Ollama InferenceTimeout, etc.) propagates unchanged. No
@@ -276,19 +285,22 @@ async def ingest_audio(
         # ADR-004 REV 2. On any tool_call failure the helper falls
         # back to the static _REFERRAL_ORG_BY_LANG lookup so the
         # safety path always completes.
-        referral_org, _locale_message = await _format_crisis_referral(
+        referral_org, locale_message = await _format_crisis_referral(
             transcription=result.transcription,
             lang=lang,
             safety=safety,
             ollama=ollama,
         )
-        return _persist_crisis_record(
+        record = _persist_crisis_record(
             lang=lang,
             source_device_id=source_device_id,
             safety=safety,
             storage=storage,
             referral_organization=referral_org,
         )
+        # Empty string fallback (Gemma tool_call failure) → None so
+        # the route layer can use a clean `if message is not None`.
+        return record, locale_message or None
 
     # Stage 3: Gemma tool-calling extraction on SOURCE text.
     messages = _build_extraction_messages(result.transcription)
@@ -367,7 +379,7 @@ async def ingest_audio(
         is_minor=record.is_minor,
         lang=lang,
     )
-    return record
+    return record, None
 
 
 def _persist_crisis_record(

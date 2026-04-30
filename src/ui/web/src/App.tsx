@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
-  IconMic, IconLock, IconLanguages, IconInfo, IconSparkle, IconCheck, IconShield,
+  IconMic, IconLock, IconLanguages, IconInfo, IconShield,
   IconArrowRight, IconPlay, IconAlert, IconRotate, IconLink, IconX,
 } from './components/icons';
 import { Chip, Button, Waveform, CompletenessMeter } from './components/primitives';
@@ -19,11 +19,17 @@ import type {
 import { INITIAL_RECORD } from './lib/initialState';
 import { useEventStream } from './hooks/useEventStream';
 import { useMicCapture } from './hooks/useMicCapture';
+import { useVoicePhase, type PostStatus } from './hooks/useVoicePhase';
 import { IntakePanel } from './components/IntakePanel';
+import { MatchToast } from './components/MatchToast';
+import { RailNav, type RailRoute } from './components/RailNav';
 import { uploadAudioBlob } from './lib/api';
+import { voiceCopy } from './lib/voiceCopy';
+import { dirFor, t } from './lib/i18n';
+import type { AuditEnvelope, StructlogEnvelope } from './lib/sseEnvelope';
 
 type Phase = 'ready' | 'recording' | 'processing' | 'done';
-type View = 'single' | 'split' | 'match';
+type View = 'single' | 'split' | 'match' | 'queue';
 type StatusTone = 'green' | 'amber' | 'red';
 
 // Input shape passed to logCall — id and t are added by logCall itself.
@@ -75,11 +81,11 @@ type TopBarProps = {
   statusLabel: string;
   statusTone: StatusTone;
   queued: number;
-  lang: Language;
-  setLang: Dispatch<SetStateAction<Language>>;
+  speakerLanguage: Language;
+  setSpeakerLanguage: Dispatch<SetStateAction<Language>>;
 };
 
-function TopBar({ sessionLabel, statusLabel, statusTone, queued, lang, setLang }: TopBarProps) {
+function TopBar({ sessionLabel, statusLabel, statusTone, queued, speakerLanguage, setSpeakerLanguage }: TopBarProps) {
   return (
     <header className="sticky top-0 z-20 bg-paper/95 backdrop-blur border-b border-line">
       <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-6">
@@ -113,21 +119,25 @@ function TopBar({ sessionLabel, statusLabel, statusTone, queued, lang, setLang }
           </Chip>
         </div>
 
-        {/* Language switcher — affects displaced-person-facing surfaces only */}
+        {/* Speaker-language switcher. Drives Whisper/Gemma/safety/
+            referral. Does NOT flip UI chrome — chrome is governed
+            by workerLanguage (App-level const, hardcoded 'en' in v1).
+            S6 expanded from 4 codes (EN/ES/AR/FA) to 6 to expose the
+            FLEURS-validated FR/UK speaker coverage. */}
         <div className="flex items-center border border-line rounded-kin overflow-hidden">
           <span className="px-2 text-muted"><IconLanguages size={14} /></span>
-          {["EN", "ES", "AR", "FA"].map((code) => {
+          {["EN", "ES", "AR", "FA", "FR", "UK"].map((code) => {
             const k = code.toLowerCase() as Language;
-            const active = lang === k;
+            const active = speakerLanguage === k;
             return (
               <button
                 key={code}
-                onClick={() => setLang(k)}
+                onClick={() => setSpeakerLanguage(k)}
                 className={`h-9 px-2.5 text-[13px] font-medium border-l border-line transition-colors ${
                   active ? "bg-primary text-white" : "bg-white text-ink hover:bg-subtle"
                 }`}
                 aria-pressed={active}
-                title={`Person-facing prompts: ${code}`}
+                title={`Speaker language: ${code}`}
               >
                 {code}
               </button>
@@ -140,77 +150,124 @@ function TopBar({ sessionLabel, statusLabel, statusTone, queued, lang, setLang }
 }
 
 // ---------- Voice-note affordance ----------------------------------------
-type VoicePanelProps = {
-  /* phase is now derived inside VoicePanel from useMicCapture state.
-     Kept on the props type as `Phase` only because runDemo() still
-     drives the App-level `phase` state for the offline fallback path
-     via the DemoDock; vestigial here but harmless. */
-  phase: Phase;
-  lang: Language;
-  /* onBegin still passed for the offline-demo fallback (DemoDock);
-     ignored by VoicePanel's mic flow. */
-  onBegin: () => void;
+export type VoicePanelProps = {
+  /* Bundle 1.5 S6 split: workerLanguage drives chrome (caption,
+     Begin/Stop button labels). speakerLanguage drives the ready-copy
+     greeting (read aloud to the displaced person), and is the
+     language Whisper/Gemma/safety see via the POST. */
+  workerLanguage: Language;
+  speakerLanguage: Language;
   elapsedSec: number;
   sourceDeviceId: string;
   intakeId: string | null;
+  /* SSE state slices passed from App.tsx (which owns the
+     useEventStream subscription). The voice phase machine reads these
+     to advance through transcribing -> extracting -> done. */
+  auditEvents: AuditEnvelope[];
+  structlogEvents: StructlogEnvelope[];
+  /* Fires when /intake/audio responds with status=paused_for_crisis.
+     Carries Gemma's locale_aware_message (or null on tool_call
+     fallback). App opens the overlay and clears intakeId in one
+     state-setter chain — see ADR-004 REV 3. */
+  onCrisisResponse?: (message: string | null) => void;
 };
 
-function VoicePanel({ lang, elapsedSec, sourceDeviceId, intakeId }: VoicePanelProps) {
+export function VoicePanel({
+  workerLanguage,
+  speakerLanguage,
+  elapsedSec,
+  sourceDeviceId,
+  intakeId,
+  auditEvents,
+  structlogEvents,
+  onCrisisResponse,
+}: VoicePanelProps) {
   const intakeIdRef = useRef<string | null>(intakeId);
   intakeIdRef.current = intakeId;
+  const onCrisisResponseRef = useRef(onCrisisResponse);
+  onCrisisResponseRef.current = onCrisisResponse;
 
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [lastPostStatus, setLastPostStatus] = useState<PostStatus | null>(null);
 
-  const { state, start, stop, error } = useMicCapture({
+  const { state: micState, start, stop, error } = useMicCapture({
     onStop: async (blob) => {
       try {
-        await uploadAudioBlob({
+        const resp = await uploadAudioBlob({
           blob,
-          lang,
+          lang: speakerLanguage,
           sourceDeviceId,
           intakeId: intakeIdRef.current,
         });
         setUploadError(null);
+        if (resp.status === 'paused_for_crisis') {
+          setLastPostStatus('paused_for_crisis');
+          onCrisisResponseRef.current?.(resp.locale_aware_message ?? null);
+        } else {
+          setLastPostStatus('completed');
+        }
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : String(err));
       }
     },
   });
 
-  const waveState =
-    state === "recording" ? "recording" :
-    state === "processing" ? "processing" :
-    "idle";
+  const { phase, onBegin: phaseBegin, onStop: phaseStop } = useVoicePhase({
+    micState,
+    auditEvents,
+    structlogEvents,
+    lastPostStatus,
+  });
 
-  const readyCopy = {
-    en: "Ready to begin intake — explain to the person in front of you what KIN does, then press Begin.",
-    es: "Listo para comenzar la entrevista — explique a la persona frente a usted lo que hace KIN, y luego pulse Comenzar.",
-    ar: "جاهز لبدء المقابلة — اشرح للشخص أمامك ما يفعله KIN، ثم اضغط «ابدأ».",
-    fa: "آمادهٔ شروع مصاحبه — برای شخص مقابل توضیح دهید KIN چه می‌کند، سپس «شروع» را فشار دهید.",
-  }[lang] || readyCopyFallback;
-  const beginLabel = { en: "Begin", es: "Comenzar", ar: "ابدأ", fa: "شروع" }[lang] || "Begin";
-  const stopLabel = { en: "Stop", es: "Detener", ar: "إيقاف", fa: "توقف" }[lang] || "Stop";
-  const rtl = lang === "ar" || lang === "fa";
+  const waveState =
+    phase === 'recording' ? 'recording' :
+    phase === 'transcribing' || phase === 'extracting' ? 'processing' :
+    'idle';
+
+  /* S6 chrome split: caption + Begin/Stop button labels are operator
+     chrome and read workerLanguage. The ready-copy paragraph (below)
+     is the speaker-facing greeting and reads speakerLanguage; its
+     dir attribute follows speakerLanguage too. */
+  const caption = voiceCopy[phase].en;
+  const beginLabel = t('voice.begin', workerLanguage);
+  const stopLabel = t('voice.stop', workerLanguage);
+  const speakerRtl = dirFor(speakerLanguage) === 'rtl';
+
+  const showBegin = phase === 'ready' || phase === 'done';
+  const showStop = phase === 'recording' || phase === 'transcribing' || phase === 'extracting';
+
+  /* Mic-icon chrome cycles per design ref nav-app.jsx:144-149. */
+  const micIconCls =
+    phase === 'recording' ? 'border-red/40 text-red bg-red-soft' :
+    phase === 'transcribing' || phase === 'extracting' ? 'border-line text-primary bg-primary-soft' :
+    phase === 'awaiting' ? 'border-primary/30 text-primary bg-primary-soft' :
+    'border-line text-ink';
+
+  const handleBegin = () => {
+    phaseBegin();
+    setLastPostStatus(null);
+    void start();
+  };
+
+  const handleStop = () => {
+    phaseStop();
+    stop();
+  };
 
   return (
     <div className="bg-card border border-line rounded-kin-lg">
       <div className="px-5 py-4 border-b border-hair flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className={`w-8 h-8 rounded-kin border flex items-center justify-center ${
-            state === "recording" ? "border-red/40 text-red bg-red-soft" :
-            state === "processing" ? "border-line text-muted" :
-            state === "error" ? "border-red/40 text-red" :
-            "border-line text-ink"
-          }`}>
+          <div className={`w-8 h-8 rounded-kin border flex items-center justify-center ${micIconCls}`}>
             <IconMic size={16} />
           </div>
           <div>
             <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Voice intake</div>
-            <div className="text-[15px] text-ink mt-0.5">
-              {state === "idle"       && "Not recording"}
-              {state === "recording"  && <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-red animate-pulse" />Recording — speaker is giving testimony</span>}
-              {state === "processing" && "Listening completed — structuring record…"}
-              {state === "error"      && (error ?? uploadError ?? "Microphone unavailable")}
+            <div className="text-[15px] text-ink mt-0.5" aria-live="polite">
+              {caption}
+              {(error ?? uploadError) && (
+                <span className="ml-2 text-red">{error ?? uploadError}</span>
+              )}
             </div>
           </div>
         </div>
@@ -220,30 +277,30 @@ function VoicePanel({ lang, elapsedSec, sourceDeviceId, intakeId }: VoicePanelPr
       </div>
 
       <div className="px-5 py-5">
-        {(state === "idle" || state === "error") ? (
-          <div className={`flex flex-col sm:flex-row sm:items-center gap-4 ${rtl ? "rtl" : ""}`}>
+        {showBegin ? (
+          <div
+            dir={dirFor(speakerLanguage)}
+            className={`flex flex-col sm:flex-row sm:items-center gap-4 ${speakerRtl ? 'rtl' : ''}`}
+          >
             <div className="flex-1 min-w-0">
-              <div className="text-[17px] text-ink leading-relaxed" style={{ textWrap: "pretty" }}>
-                {readyCopy}
+              <div className="text-[17px] text-ink leading-relaxed" style={{ textWrap: 'pretty' }}>
+                {READY_COPY[speakerLanguage] ?? READY_COPY.en}
               </div>
               <div className="mt-2 text-[13px] text-muted flex items-center gap-1.5">
                 <IconInfo size={13} /> Consent to begin is logged with this record.
               </div>
             </div>
-            <Button variant="primary" size="lg" icon={<IconMic size={18} />} onClick={() => { void start(); }}>
+            <Button variant="primary" size="lg" icon={<IconMic size={18} />} onClick={handleBegin}>
               {beginLabel}
             </Button>
           </div>
         ) : (
           <div className="flex items-center gap-5">
             <div className="flex-1"><Waveform state={waveState} bars={42} /></div>
-            {state === "recording" && (
-              <Button variant="secondary" size="md" onClick={stop}>
+            {showStop && (
+              <Button variant="danger" size="lg" onClick={handleStop}>
                 {stopLabel}
               </Button>
-            )}
-            {state === "processing" && (
-              <Chip icon={<IconSparkle size={12} />} tone="primary">Uploading</Chip>
             )}
           </div>
         )}
@@ -251,7 +308,18 @@ function VoicePanel({ lang, elapsedSec, sourceDeviceId, intakeId }: VoicePanelPr
     </div>
   );
 }
-const readyCopyFallback = "Ready to begin intake — explain what KIN does, then press Begin.";
+
+/* Speaker-facing greeting paragraph. Read aloud to the displaced
+   person before pressing Begin. Renders in speakerLanguage (not
+   workerLanguage) since it's part of the speaker-facing surface. */
+const READY_COPY: Record<Language, string> = {
+  en: 'Ready to begin intake — explain to the person in front of you what KIN does, then press Begin.',
+  es: 'Listo para comenzar la entrevista — explique a la persona frente a usted lo que hace KIN, y luego pulse Comenzar.',
+  ar: 'جاهز لبدء المقابلة — اشرح للشخص أمامك ما يفعله KIN، ثم اضغط «ابدأ».',
+  fa: 'آمادهٔ شروع مصاحبه — برای شخص مقابل توضیح دهید KIN چه می‌کند، سپس «شروع» را فشار دهید.',
+  fr: "Prêt à commencer l'entretien — expliquez à la personne en face de vous ce que fait KIN, puis appuyez sur Commencer.",
+  uk: 'Готовий розпочати співбесіду — поясніть людині перед вами, що робить KIN, а потім натисніть «Почати».',
+};
 function formatElapsed(s: number) {
   const m = Math.floor(s / 60); const sec = Math.floor(s % 60);
   return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
@@ -426,8 +494,14 @@ function App() {
   const [phase, setPhase]                     = useState<Phase>("ready");
   const [view, setView]                       = useState<View>("single");
   const [matchPhase, setMatchPhase]           = useState<MatchPhase>("split");
-  const [lang, setLang]                       = useState<Language>("en");
+  /* Bundle 1.5 S6: speakerLanguage drives Whisper/Gemma/safety/
+     referral; workerLanguage drives UI chrome. workerLanguage is a
+     const in v1 (no Settings UI yet); v1.1 will lift it to useState
+     with a Settings selector. Defaulting to 'en' here. */
+  const [speakerLanguage, setSpeakerLanguage] = useState<Language>("en");
+  const workerLanguage: Language = "en";
   const [crisisOpen, setCrisisOpen]           = useState(false);
+  const [crisisMessage, setCrisisMessage]     = useState<string | null>(null);
   const [devMode, setDevMode]                 = useState(false);
   const [demoDockVisible, setDemoDockVisible] = useState(true);
   const [justPopulated, setJustPopulated]     = useState<string | null>(null);
@@ -441,10 +515,19 @@ function App() {
   // SSE hook: opens /intake/stream and dispatches incoming envelopes
   // into a reducer. record + calls below are *also* driven imperatively
   // by runDemo() for the offline Demo button; SSE arrivals overlay via
-  // the useEffect below.
-  const { state: streamState } = useEventStream();
+  // the useEffect below. Disabled in split view, where each IntakePanel
+  // owns its own filtered stream and the unfiltered App-level
+  // subscription would be a redundant third EventSource.
+  const { state: streamState, clearIntakeId, reset: resetStream } = useEventStream({
+    enabled: view !== 'split',
+  });
   const seenAuditCount = useRef(0);
   const seenStructlogCount = useRef(0);
+  const matchToastFiredRef = useRef(false);
+  const [proposedMatch, setProposedMatch] = useState<{
+    matchId: string;
+    recordIds: string[];
+  } | null>(null);
 
   // Bridge SSE record into local record state. When SSE delivers a
   // field_extracted event that updates streamState.record, mirror the
@@ -465,6 +548,28 @@ function App() {
       }
     }
   }, [streamState.record, streamState.auditEvents]);
+
+  // Beat 6: surface match_proposed events as a deliberate user-driven
+  // primitive (MatchToast), not auto-route. Auto-routing on
+  // match_proposed is fundamentally ambiguous in a multi-turn intake
+  // (every turn returns status=completed via storage promotion logic).
+  // S2-fix1 decision: user clicks "Open match" on the toast to
+  // navigate; idempotent via matchToastFiredRef so subsequent
+  // match_proposed events don't re-show the toast within a session.
+  // The DemoDock "Simulate match" button remains operational as a
+  // manual override (onSimulateMatch fires view/phase directly).
+  useEffect(() => {
+    if (matchToastFiredRef.current) return;
+    const matchEvent = streamState.auditEvents.find(
+      (e) => e.payload.event_type === 'match_proposed',
+    );
+    if (!matchEvent) return;
+    matchToastFiredRef.current = true;
+    setProposedMatch({
+      matchId: matchEvent.payload.match_id ?? matchEvent.payload.id,
+      recordIds: matchEvent.payload.record_ids,
+    });
+  }, [streamState.auditEvents]);
 
   // Bridge SSE structlog events into the trace calls list.
   useEffect(() => {
@@ -586,12 +691,6 @@ function App() {
     }, lastAt + 600);
   };
 
-  const onBegin = () => {
-    if (phase !== "ready") return;
-    logCall({ name: "consent.logged", args: { method: "aid_worker_confirmation" }, result: "ok" }, 0);
-    runDemo();
-  };
-
   const onReset = () => {
     // Reset clears App-level demo state (record/phase/calls/timer)
     // but leaves view mode untouched. Switching view here would
@@ -600,11 +699,27 @@ function App() {
     setRecord(INITIAL_RECORD);
     setPhase("ready");
     setCrisisOpen(false);
+    setCrisisMessage(null);
     setTimerSec(0);
     setTimerRunning(false);
     setCalls([]);
     setJustPopulated(null);
+    // Clear SSE reducer state too — without this, intakeId stays
+    // pinned to the previous turn's record id and the next mic turn
+    // POSTs as an extend (HTTP 500 on crisis-after-Reset).
+    resetStream();
   };
+
+  const onOpenMatch = () => {
+    if (!proposedMatch) return;
+    setProposedMatch(null);
+    setView('match');
+    setMatchPhase('split');
+    setTimeout(() => setMatchPhase('linking'), 400);
+    setTimeout(() => setMatchPhase('merged'), 1100);
+  };
+
+  const onDismissMatch = () => setProposedMatch(null);
 
   const onSimulateMatch = () => {
     setView("match");
@@ -628,7 +743,7 @@ function App() {
   const onSimulateCrisis = () => {
     setCrisisOpen(true);
     logCall({ name: "escalate_crisis",
-              args: { signal: "distress_keyword", lang },
+              args: { signal: "distress_keyword", lang: speakerLanguage },
               result: "referral_card_elevated" }, timerRunning ? timerSec * 1000 : 0);
   };
 
@@ -639,11 +754,23 @@ function App() {
         statusLabel={statusLabel}
         statusTone={statusTone}
         queued={3}
-        lang={lang}
-        setLang={setLang}
+        speakerLanguage={speakerLanguage}
+        setSpeakerLanguage={setSpeakerLanguage}
       />
 
       <div className="flex-1 flex">
+        {/* PERSISTENT NAV RAIL — bimodal (capture / review). Active state
+            tracks the current view: intake covers single/split/match
+            (all capture-arm surfaces, per design ref nav-app.jsx note
+            "Match view is a sub-state of intake, not a separate route");
+            queue is its own destination. */}
+        <RailNav
+          route={view === 'queue' ? 'queue' : 'intake'}
+          setRoute={(next: RailRoute) => {
+            setView(next === 'queue' ? 'queue' : 'single');
+          }}
+        />
+
         {/* MAIN COLUMN */}
         <main className="flex-1 min-w-0">
           <div className="max-w-[1100px] mx-auto px-6 py-6">
@@ -677,12 +804,23 @@ function App() {
                     intake_created audit event after first turn). */}
                 <div className="mb-5">
                   <VoicePanel
-                    phase={phase}
-                    lang={lang}
-                    onBegin={onBegin}
+                    workerLanguage={workerLanguage}
+                    speakerLanguage={speakerLanguage}
                     elapsedSec={timerSec}
                     sourceDeviceId="laptop"
                     intakeId={streamState.intakeId}
+                    auditEvents={streamState.auditEvents}
+                    structlogEvents={streamState.structlogEvents}
+                    onCrisisResponse={(msg) => {
+                      // Gap 1+2+3 in one chain: open overlay with
+                      // Gemma's locale_aware_message, clear cached
+                      // intakeId so next mic turn takes the create
+                      // path (S5 lock #4: extend-into-crisis is
+                      // ValueError). See ADR-004 REV 3.
+                      setCrisisMessage(msg);
+                      setCrisisOpen(true);
+                      clearIntakeId();
+                    }}
                   />
                 </div>
 
@@ -725,22 +863,20 @@ function App() {
                     sourceDeviceId="tent_a"
                     tent="a"
                     panelLabel="Tent A"
-                    lang={lang}
-                    phase={phase}
+                    workerLanguage={workerLanguage}
+                    speakerLanguage={speakerLanguage}
                     timerSec={timerSec}
                     timerRunning={timerRunning}
-                    onBegin={onBegin}
                     crisisOpen={crisisOpen}
                   />
                   <IntakePanel
                     sourceDeviceId="tent_b"
                     tent="b"
                     panelLabel="Tent B"
-                    lang={lang}
-                    phase={phase}
+                    workerLanguage={workerLanguage}
+                    speakerLanguage={speakerLanguage}
                     timerSec={timerSec}
                     timerRunning={timerRunning}
-                    onBegin={onBegin}
                     crisisOpen={crisisOpen}
                   />
                 </div>
@@ -752,6 +888,16 @@ function App() {
                 phase={matchPhase}
                 onBack={() => setView("single")}
               />
+            )}
+
+            {view === "queue" && (
+              <div>
+                <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Queue</div>
+                <h1 className="text-[24px] font-semibold text-ink mt-0.5 tracking-[-0.01em]">
+                  Recent records
+                </h1>
+                <div className="mt-4 text-[14px] text-muted">Coming in S7.</div>
+              </div>
             )}
           </div>
         </main>
@@ -769,14 +915,18 @@ function App() {
       {/* Crisis overlay — pauses the record but does not modal-block the page */}
       {crisisOpen && (
         <CrisisReferralCard
-          lang={lang}
+          workerLanguage={workerLanguage}
+          speakerLanguage={speakerLanguage}
+          message={crisisMessage}
           onResolved={() => {
             setCrisisOpen(false);
+            setCrisisMessage(null);
             logCall({ name: "crisis.resolve", args: { outcome: "referral_provided" } },
                     timerRunning ? timerSec * 1000 : 0);
           }}
           onDeEscalated={() => {
             setCrisisOpen(false);
+            setCrisisMessage(null);
             logCall({ name: "crisis.resolve", args: { outcome: "de_escalated" } },
                     timerRunning ? timerSec * 1000 : 0);
           }}
@@ -797,6 +947,12 @@ function App() {
       {!demoDockVisible && (
         <DemoReopenPill onOpen={() => setDemoDockVisible(true)} />
       )}
+
+      <MatchToast
+        open={proposedMatch !== null}
+        onOpen={onOpenMatch}
+        onDismiss={onDismissMatch}
+      />
 
       <ShortcutHint isMac={isMac} />
     </div>

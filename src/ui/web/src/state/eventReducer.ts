@@ -37,7 +37,8 @@ export type EventStreamState = {
 export type EventStreamAction =
   | { type: 'envelope'; envelope: EventEnvelope }
   | { type: 'connection'; value: ConnectionState }
-  | { type: 'reset' };
+  | { type: 'reset' }
+  | { type: 'clear_intake_id' };
 
 export const INITIAL_STATE: EventStreamState = {
   record: INITIAL_RECORD,
@@ -133,5 +134,12 @@ export function eventReducer(
       return { ...state, connection: action.value };
     case 'reset':
       return { ...INITIAL_STATE, connection: state.connection };
+    case 'clear_intake_id':
+      // Gap 3 (ADR-004 REV 3): after a crisis turn the persisted
+      // record has status=paused_for_crisis; the next mic turn must
+      // take the create-path (S5 lock #4: extend-into-crisis is
+      // ValueError) so we drop the cached intakeId. Done at the
+      // reducer because intakeId lives here, not in App state.
+      return state.intakeId === null ? state : { ...state, intakeId: null };
   }
 }

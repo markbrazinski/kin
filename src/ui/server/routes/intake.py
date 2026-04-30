@@ -23,6 +23,20 @@ log = structlog.get_logger(__name__)
 router = APIRouter()
 
 
+class AudioUploadResponse(BaseModel):
+    """Response shape for POST /intake/audio.
+
+    `locale_aware_message` is populated only when status is
+    "paused_for_crisis"; it carries Gemma's escalate_crisis short
+    message in the speaker's language for the overlay to render.
+    Ephemeral — not persisted (ADR-004 REV 2 + REV 3).
+    """
+
+    intake_id: str
+    status: str
+    locale_aware_message: str | None = None
+
+
 @router.get("/intake/stream")
 async def intake_stream(
     request: Request,
@@ -52,7 +66,7 @@ async def upload_audio(
     lang: str = Form(...),
     source_device_id: str = Form(...),
     intake_id: str | None = Form(None),
-) -> dict[str, Any]:
+) -> AudioUploadResponse:
     """Browser MediaRecorder posts a blob (typically audio/webm) here.
 
     Backend transcodes to 16kHz mono s16 WAV via ffmpeg subprocess
@@ -109,7 +123,7 @@ async def upload_audio(
             capture_output=True,
         )
 
-        record = await ingest_audio(
+        record, locale_message = await ingest_audio(
             audio_path=wav_path,
             lang=lang,
             source_device_id=source_device_id,
@@ -119,10 +133,16 @@ async def upload_audio(
             intake_id=parsed_intake_id,
         )
 
-    return {
-        "intake_id": str(record.id),
-        "status": record.status,
-    }
+    # Defensive status-gating: ingest_audio only returns a non-None
+    # message on the crisis branch, but explicit gating in the
+    # response layer keeps the contract obvious to readers.
+    return AudioUploadResponse(
+        intake_id=str(record.id),
+        status=record.status,
+        locale_aware_message=(
+            locale_message if record.status == "paused_for_crisis" else None
+        ),
+    )
 
 
 # ─── Worker transliteration ──────────────────────────────────────

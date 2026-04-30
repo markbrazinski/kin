@@ -1,308 +1,378 @@
-# KIN — Handoff
+# HANDOFF — Bundle 1 (CLOSED)
 
-**Project:** KIN — Offline multilingual family-reunification intake copilot
-**Hackathon:** Gemma 4 Good Hackathon (Google DeepMind / Kaggle)
-**Submission deadline:** May 17, 2026
-**Solo developer:** Mark Brazinski (Twilio PM, non-developer; Claude Code is implementer)
-**Hardware:** MacBook Air M4
-**Last updated:** May 1, 2026 — Phase 1 certified
-
----
-
-## Read this first
-
-You are picking up a hackathon project that ships in 16 days. The runtime
-spine landed May 1 (commits `9615bcd` → `bfa50e9`). The next bundle is
-Bundle 1: SSE wiring + four UI affordances (May 2-4). After that, Bundle 2
-(Tent A snapshot + smoke test, May 5-6), then safety-net video window
-(May 7-9), feature freeze May 10, polish window May 10-12, final video
-production May 13-15, submit May 16.
-
-The discipline that produced Phase 1 cleanly is plan-approve-execute,
-session-by-session, with cross-session decisions locked at the planning
-gate and pre-flight Boss-mode questions surfaced before each session.
-Mark approves; Claude Code executes; verdict returns. No silent commits,
-no scope drift mid-session. Replicate this in every bundle.
+**Last updated:** April 29, 2026 (post-S7 commit `a08b546`, Bundle 1 architecturally closed)
+**Project:** KIN — offline-first multilingual family-reunification intake copilot
+**Hackathon:** Gemma 4 Good Hackathon
+**Submission deadline:** May 17, 2026 (target submit May 16)
+**Builder:** Solo (Mark Brazinski)
 
 ---
 
-## Current state (May 1, post-Phase 1)
+## Why this document exists
 
-**Backend pipeline complete.** `ingest_audio(audio_path, lang, source_device_id, *, whisper, ollama, storage)` runs end-to-end from audio file → persisted IntakeRecord with full audit trail, validated against real Whisper + real Gemma 4 E2B in 4.5 seconds wall-clock (warm).
+This thread has compacted once and will compact again. HANDOFF captures the architectural state of the codebase at the end of Bundle 1 so that future-Mark, future-Claude, and future-CC can resume work without reconstructing decisions from chat history. Update at each bundle close.
 
-Pipeline stages:
-1. Whisper transcription (source-language text)
-2. Gemma translation (source → English; skipped if `lang="en"`)
-3. `safety_rules.classify` on source text — crisis path branches early
-4. Gemma `tool_call(extract_intake_fields, source_text)` — returns ToolCallResult
-5. Map extracted args → IntakeRecord fields (Latin / non-Latin transliteration logic)
-6. Persist: `create_intake_record(status="partial")` + bulk `update_intake_record(...fields)`
-7. Matching trigger: pairwise fan-out, persist hits as proposed MatchLinks
-8. Promote to `status="complete"` if both required identity fields populated
-
-Crisis records skip 4-7. All audit events auto-emit per Part 1 REV 4 mapping.
-
-**Frontend still on setTimeout fakes.** React app shell, audio waveform, field-population animations, completeness meter, color-coded safety beats, end card — all stable from Days 1-7. SSE not yet wired. The four high-risk affordances (merge animation, two-device differentiation, structlog sidebar, JSON function-call sidebar) are unbuilt. Bundle 1 fixes this.
-
-**Storage runtime.** `storage/` directory at repo root, gitignored. Three JSONL files: `intake_records.jsonl`, `match_links.jsonl`, `audit_events.jsonl`. Single-writer assumption. No concurrency.
-
-**Tent A Mohammed snapshot mechanism unbuilt.** Waits on Fiverr Arabic audio (May 5+). Bundle 2 territory.
-
-**Demo audio.** `audio_samples/spanish_intake_tts_01.wav` is TTS-generated Spanish ("Estoy buscando a mi hijo. Se llama Carlos."). Functional for smoke test; will swap to real audio when Fiverr Spanish lands or Mark self-records.
+This is **architectural state**, not running task list. Quality findings, polish-week tasks, and in-flight work live elsewhere (chat thread + briefs/).
 
 ---
 
-## Test counts
+## Build status snapshot (Bundle 1 close, post-S7)
 
-| State | Count |
+| Layer | Lines |
 |---|---|
-| Pre-S2 baseline | 75 |
-| Post-S2 (storage layer) | 97 |
-| Post-S3 (extraction tool-calling) | 107 |
-| Post-S4 (orchestration) | 113 |
-| Post-S5 (matching trigger + audit verification) | 118 |
-| Post-S6 (Phase 1 smoke) | 119 (118 fast + 1 smoke) |
+| Python production (`src/`) | 3,781 |
+| Python tests (`tests/`) | 4,676 |
+| TypeScript / TSX (`src/ui/web/src/`) | 4,176 |
+| CSS | 81 |
+| **Total** | **12,714** |
 
-**Run modes:**
-- `pytest` → 118 fast tests in ~8s (smoke excluded by default)
-- `pytest -m smoke` → 1 real-models smoke test in ~14s cold / ~8s warm
+Test ratio: 1.24:1 (tests:production).
 
-All 8 audit_event types from Part 1 REV 4 enum have ≥1 test asserting emission. Layer boundary test green throughout (8/8). Zero regressions across S2-S6.
+| Test gate | Count |
+|---|---|
+| Python fast pass | 139 |
+| Python smoke | 3 deselected (run via `pytest -m smoke`) |
+| Vitest | 35 |
+| AST layer boundaries | enforced via test |
+| TypeScript strict | clean |
+| Vite production build | 53 modules, 196KB JS |
+
+## Hackathon target & prize strategy
+
+**Primary prize target:** Digital Equity & Inclusivity ($10K)
+**Judging panel:** Google DeepMind + humanitarian-domain reviewers
+**Differentiator:** real Gemma 4 native tool-calling, source-script preservation throughout, deterministic-then-Gemma crisis path with auditable structlog
+**Demo runtime target:** 2:19 (per script v3), 2:59 hard cap
 
 ---
 
-## Locked decisions (do not relitigate)
+## Workflow conventions
 
-### Architecture Decision Records
+### Plan-approve-execute discipline (DO NOT BREAK)
 
-| ADR | Subject | Status |
+Mark drafts session briefs in chat. CC enters plan mode, returns plan, awaits approval. Mark approves. CC executes. CC returns verdict.
+
+CC never executes without an approved plan. The plan-approve gate is the last chance to catch wrong-shaped approaches before code happens.
+
+### Test budget discipline
+
+Every brief has a test budget range (e.g., 8-12). Hit the **floor**. Headroom exists for genuine gaps surfaced during execution, not pre-planned scope expansion. Exceeding ceiling triggers escalation.
+
+### Commit prefix per session
+
+- `bundle1-S{n}:` for primary session work
+- `bundle1-S{n}-fix:` for QA findings on a session
+- `bundle1-cleanup:` / `bundle1-cleanup-N:` for documentation, ADRs, HANDOFF updates
+- `bundle1-focus-fix:` for pre-existing bugs surfaced during a session but not S{n} regressions
+
+### Git discipline
+
+**No `git push` without explicit Mark instruction.** All commits stay local until explicitly pushed. This is durable — survived all 6 sessions.
+
+---
+
+## Bundle 1 commits (chronological, all local)
+
+| Commit | Session | Summary |
 |---|---|---|
-| ADR-001 | Web UI primary demo surface (Claude Code IDE for caseworker review) | LOCKED |
-| ADR-003 | Gemma `think=False` enforcement | LOCKED |
-| ADR-004 | Orchestration architecture (extraction-via-tool-calling, matching-trigger placement, crisis-path branching, bulk vs progressive field_extracted emission) | LOCKED |
+| `db200eb` | S1 | SSE backend — merged audit + structlog stream with source_device_id filter, sse-starlette, real uvicorn-in-thread test fixture |
+| `f138970` | S2 | SSE frontend consumer — useEventStream hook + reducer, MockEventSource |
+| `e3d613a` | S3 | Two-device split-view + themed IntakePanel (CSS variables via `data-tent` attribute, accessibility-preserving) |
+| `29d9cc9` | cleanup | ADR-005 + HANDOFF.md (initial) + briefs/bundle-1-context.md |
+| `309a7b8` | S4 | Transliteration field + per-panel structlog sidebar + `/qa/inject` endpoint (KIN_QA_MODE=1 gated) |
+| `443f88c` | S4-fix | QA-1 findings — preserve view on reset, last-writer-wins on field re-writes |
+| `c5e584a` | S5 | Pipeline progressive extend path + browser mic capture + match re-trigger + lifespan-time pre-warm |
+| `b92b3b6` | S5-fix | Lifespan startup bugs |
+| `a8fd161` | S5-fix2 | Additional lifespan startup fix |
+| `0e7c7ca` | S6 | escalate_crisis Gemma tool + ADR-004 REV 2 |
+| `d506d1d` | cleanup-2 | Post-S6 HANDOFF + Bundle 1 architectural state |
+| `4f42f4c` | S6-fix2-prep | ADR-004 REV 3 — locale_aware_message also rides POST response (doc-only) |
+| `4f9e38e` | S6-fix2 | Deliver locale_aware_message to crisis overlay + Gap 3 (intakeId reset on crisis) |
+| `a08b546` | S7 | Beat 6 merge animation (kin-merge-pulse + prefers-reduced-motion + SSE-driven trigger) + extend smoke + crisis smoke + onBegin dead-code cleanup |
 
-### Cross-session decisions from Phase 1 brief
-
-These were locked at the Apr 29 planning gate. They govern any code that touches the pipeline.
-
-- **IntakeRecord shape:** flat per Part 1 REV 4 spec. No nested RFLRecord. Pydantic v2, `ConfigDict(extra='ignore')`.
-- **RFLRecord** stays as the in-flight extraction model. Storage owns persistence (flat); matching owns the algorithm domain (nested). The bridge `_to_rfl_record(intake)` in `transcription_pipeline.py` translates between them.
-- **Storage location:** `storage/` at repo root, gitignored. Three JSONL files.
-- **UUID + timestamps:** `uuid4()` for IDs. Timestamps via Clock-injected `now()` (extended Protocol). `StorageAdapter` accepts a Clock in its constructor; FakeClock for tests.
-- **Concurrency model:** none. Read-modify-write for updates. Single-writer assumption documented in `storage_adapter.py` module docstring.
-- **Audit-event mapping ownership:** lives in `storage_adapter` (auto-write on CRUD operations). Pipeline never writes audit events directly — it triggers them via storage operations. The Part 1 REV 4 audit-event mapping table is the contract.
-- **Matching-trigger placement:** orchestration, not storage. `_trigger_matching` lives in `transcription_pipeline.py` next to `ingest_audio`. ADR-004 records the rationale.
-- **Crisis-path branching:** when `safety_rules.classify` returns `is_crisis=True`, `ingest_audio` persists a `paused_for_crisis` record with referral fields and returns. No tool_call invocation, no `_trigger_matching` call.
-- **Bulk vs progressive `field_extracted` emission:** orchestration emits all field_extracted events at once after a single tool_call. Beat 5's progressive turn-by-turn appearance is NOT an orchestration concern — Bundle 1's SSE-wiring brief inherits this constraint and resolves it via either three sequential audio files or staggered SSE rendering.
-- **Mapping rules:**
-  - Latin-script langs (en, es, fr): `full_name_source_script = full_name_transliteration = args.full_name`
-  - Non-Latin langs (ar, fa, uk): `full_name_source_script = args.full_name`, `full_name_transliteration = ""` (worker-entered later)
-  - `is_minor = (args.age is not None and args.age < 18)`
-  - `crisis_match_path = "keyword"` if `safety_result.matched_keywords` non-empty, else `None`. (`"semantic"` enum value defined but unwritten until Day 8-9 future work.)
-  - `minor_flagged` event emitted via structlog only, not persisted as audit_event (per Part 1 REV 4 enum constraint).
-
-### Demo and prize strategy decisions
-
-- **Primary prize target:** Digital Equity & Inclusivity ($10K)
-- **Demo script v2 locked at 2:20 target** (9 segments)
-- **6 supported languages:** en, es, ar, fa, fr, uk. Demo features en/es/ar/fa.
-- **Matching algorithm:** Jaro-Winkler ≥0.85 gate + composite ≥0.70, source-script preservation, NO LLM in matching path. Locked at `matching.py`.
+**Bundle 1 closes here. 14 commits, all local. Bundle 1.5 brief drafts next.**
 
 ---
 
-## Working discipline
+## Architectural locks (DO NOT RELITIGATE)
 
-### Plan-approve-execute (mandatory)
+### ADRs (settled, do not relitigate)
 
-1. Mark sends a brief with sessions S1-Sn defined.
-2. Agent enters S1, returns a plan (file changes, test counts, pre-flight resolutions, exit criteria, escalation triggers, commit message).
-3. Mark reviews plan, surfaces Boss-mode questions if needed, approves.
-4. Agent executes S1, returns verdict (test counts, files changed, regressions, pre-flight resolutions held).
-5. Mark approves S1 commit, agent commits locally.
-6. Repeat for S2..Sn.
+- **ADR-001:** Hexagonal architecture, Core/Integration/UI layers, AST-enforced boundaries
+- **ADR-003:** JSONL append-only audit log with single-writer constraint (concurrent writes out of scope)
+- **ADR-004:** Orchestration architecture — pipeline as single async coroutine, deterministic safety gate, Gemma as formatter
+- **ADR-004 REV 2:** Crisis branch invokes Gemma `escalate_crisis` tool for referral formatting; deterministic `safety_rules.classify` remains sole safety gate; Gemma never decides crisis. Reversion criterion: *"is Gemma's output on the safety path causing harm we cannot detect?"* — not *"did we recently add a Gemma call we should remove for cleanliness?"*
+- **ADR-004 REV 3:** `locale_aware_message` also rides the `/intake/audio` POST response (in addition to the existing structlog → SSE channel). Frontend overlay opens atomically with Gemma's locale-aware body text — eliminates the SSE race window. Ephemeral lock preserved (not persisted to IntakeRecord, AuditEvent, or JSONL).
+- **ADR-005:** SSE tests use real uvicorn-in-thread fixture, not ASGITransport (mocking didn't catch real bugs)
 
-No silent decisions. No surprise scope expansion. No git push without explicit "push it" from Mark.
+### Bundle 1 surface locks
 
-### Pre-flight Boss-mode questions
+- **No new state library** (Zustand etc). Reducer + hook composition via `useEventStream`.
+- **No new animation library** (Framer Motion etc). CSS keyframes for S7 merge animation.
+- **No new dependencies without escalation.** Both Python and React.
+- **No Core schema changes** during SSE work (Bundle 1). Additive Integration-layer changes are fine.
+- **Single-writer JSONL storage.** Concurrent writes out of scope.
+- **127.0.0.1 localhost-only.** Never deployed. Reframed in writeup as "deliberate offline-first architecture."
 
-Surface decisions BEFORE writing code, not during. The Phase 1 pattern: when an agent encounters a fork that affects multiple sessions or contradicts an ambient assumption, it returns a question with options and a recommendation. Mark answers in seconds; the alternative is hours of mid-session rework.
+### Source-language preservation (architectural commitment)
 
-Examples from Phase 1 that earned their keep:
-- Pydantic v2 enum/datetime serialization probe before S2 (resolved: Literal types round-trip cleanly)
-- Source-text vs English-translation for extraction before S4 (resolved: source text)
-- Failure-mode for Whisper exceptions before S4 (resolved: propagate, no defensive record)
-- File placement for `_trigger_matching` before S5 (resolved: same file as `ingest_audio`)
-- Spanish fixture choice before S6 (resolved: spanish_01.wav, then re-pointed to TTS when content gap surfaced)
-- Smoke marker default before S6 (resolved: exclude by default)
+KIN preserves source language for **all** speaker-captured fields, not just names. Examples in active demo path:
 
-### Test budget caps
+- Names: `Carlos`, `محمد` (Arabic) + transliteration metadata (`Mohammed`, `Mohamad`)
+- Relationships: `hijo` (not "son"), `hija` (not "daughter")
+- Locations: `la frontera con Colombia` (not "the border with Colombia")
+- Dates: `dos semanas` (not "two weeks ago") — `normalize_date` adds normalized metadata, source preserved
+- Distinguishing features: `marca en la mejilla derecha`
 
-Each session names a test count target (e.g. "10-12"). Hit the lower bound. If tests creep past the upper bound, that's an escalation trigger — pull back rather than over-cover. Phase 1 sessions hit:
+UI display may add an English gloss (e.g., "hijo (son)") for non-Spanish-reading judges, but stored canonical value is always source-language. English glosses are display-time translations from a static mapping, never source of truth.
 
-| Session | Budget | Actual |
+### Languages
+
+- **Active demo path:** EN, ES, AR, FA
+- **Storage capacity:** EN, ES, AR, FA, FR, UK (Python `SupportedLanguage` enum)
+- **React `Language` type drift:** Currently out of sync with Python — UK/FR missing from `src/ui/web/src/lib/types.ts:9`. Polish-week reconcile, not blocking.
+
+### Theme & design discipline
+
+- High-contrast theme on both panels (Tent A primary blue + sans-serif + 24h timestamps; Tent B amber + monospace accent + 12h timestamps)
+- Dark mode killed for accessibility (humanitarian-domain accessibility floor)
+- Borders over shadows
+- Warm paper surface, humanitarian teal primary
+- 6px radius
+- Noto Sans + mono
+- 63 lines of CSS total — Tailwind utilities + design tokens, not styling soup
+
+---
+
+## Round 2 design decisions (locked April 28)
+
+13 questions answered. Highlights:
+
+1. Split-intake: one window, side-by-side panels, toggled by presenter
+2. Records queue: show recently completed records with status (real, not decoration)
+3. Navigation: thin icon rail (44px, always visible) — **NO command palette in user UI**
+4. Presentation entry: keyboard shortcut only `⌘⇧P` (no URL param, no command palette)
+5. Pacing: real interactions throughout. Phone-into-laptop-mic capture; presenter drives real Begin/Stop buttons; `⌘⇧P` only hides dev surfaces and seeds data
+6. Sidebars (structlog + JSON tool calls): always visible during demo — credibility surface
+7. After record completes: hybrid — stay on completed record with "Start new intake" CTA, OR auto-route to match view if `match_proposed` event fires
+8. First load: empty intake panel, voice panel "Ready to begin"
+9. Judge-cold: tour + seeded queue + clickable intake
+10. DemoDock: keep, gate behind `?dev=1` / `⌘⇧D` — never visible by default
+11. Bundle 1.5 scope: 6 sessions (Path B, full scope including queue and empty states)
+12. All Round 1 locks remain
+13. Custom: presenter affordances must be invisible to judges; recording crop must verify HUD invisible at 1080p; humanitarian-domain accessibility floor
+
+### Three remaining Round 2 design questions
+
+| # | Question | Status |
 |---|---|---|
-| S2 | 15-20 | 20 storage + 9 Clock = 29 (Clock surplus from Protocol extension, called out in pre-flight) |
-| S3 | 10-12 | 10 |
-| S4 | 5-7 | 6 |
-| S5 | 3-4 + 1 | 4 + 1 |
-| S6 | 1 | 1 |
-
-### One commit per session
-
-Clean rollback boundaries. Each session = one commit with `phase-Sn:` prefix. Phase 1 commit chain:
-
-```
-bfa50e9 phase-S6 followup: TTS fixture re-point + smoke GREEN  ← Phase 1 closure
-2a48878 phase-S6: Phase 1 smoke test infrastructure
-eeafcc4 phase-S5: matching trigger + ADR-004 + matching docs §9
-c97f86e phase-S4: ingest_audio orchestration
-cd82c3a phase-S3: ollama tool_call() + extract_intake_fields tool
-9615bcd phase-S2: storage layer (IntakeRecord/MatchLink/AuditEvent + Clock.now())
-```
-
-### Layer boundaries
-
-Three layers: Core / Integration / UI. AST-enforced via `tests/test_layer_boundaries.py`. Core never imports from Integration or UI. Integration may import from Core. UI may import from Integration. Test must stay green after every session.
-
-### No git push
-
-Local commits only. Mark pushes when ready. The voice in the agent's head saying "let me push to back this up" is the enemy.
+| 1 | Crisis state design | ✅ done, no work needed |
+| 2 | Split view layout | ⚠️ S3 split view exists; clarify whether Round 2 redesign exists or S3 is canonical |
+| 3 | Match view layout clip | ⚠️ real but minor — viewport cramp at <1400px, ~10 lines to fix in Bundle 1.5 |
 
 ---
 
-## Bundle map (May 1 → May 17)
+## Schedule
 
-| Bundle | Window | Sessions | Status |
+**Build window:** April 23 → May 16 = 24 days. Today (April 29) is day 6 of the build window; 18 days remain at submission target.
+
+| Phase | Calendar | Status |
+|---|---|---|
+| Bundle 1 (S1-S7) | April 23-29 | CLOSED (commit `a08b546`) |
+| Bundle 1.5 (6 sessions, Round 2 nav refactor) | May 1-4 | Pending |
+| Bundle 2 (Tent A snapshot + match smoke) | May 5-7 | Pending |
+| Safety-net video recording | May 7-9 | Pending |
+| Feature freeze | May 10 | Pending |
+| Polish week | May 10-12 | Pending |
+| Final video production | May 13-15 | Pending |
+| Submit | May 16 | Pending |
+| Buffer | May 17 | Pending |
+
+---
+
+## Key files & locations
+
+### Production code
+
+- **Pipeline:** `src/integration/pipeline/transcription_pipeline.py`
+- **Crisis tool:** `src/integration/escalate_crisis_tool.py` (S6 new)
+- **Extraction tool:** `src/integration/pipeline/extraction_tools.py`
+- **Ollama adapter:** `src/integration/ollama_adapter.py` (already generic over tools, S6 finding)
+- **Storage adapter:** `src/integration/storage_adapter.py`
+- **Storage schemas:** `src/core/storage_schemas.py` (AuditEventType Literal, IntakeRecord)
+- **Safety rules:** `src/core/safety_rules.py` (deterministic classifier, sole safety gate)
+- **SSE bridge:** `src/ui/server/sse.py`
+- **FastAPI app:** `src/ui/server/main.py` (lifespan warmup hook lives here)
+- **Frontend hooks:** `src/ui/web/src/hooks/useEventStream.ts`, `src/ui/web/src/hooks/useMicCapture.ts` (S5 new)
+- **Components:** `src/ui/web/src/components/IntakePanel.tsx`, `VoicePanel.tsx`, `StructlogSidebar.tsx`
+
+### Documents
+
+- **CLAUDE.md** — development guide for CC, type-strict discipline, prompt budgets
+- **briefs/bundle-1-context.md** — Bundle 1 context (committed in `29d9cc9`)
+- **HANDOFF.md** — this file
+- **docs/ADR/001-…md** through **docs/ADR/005-…md** — architecture decision records
+- **PROJECT_PLAN.md** — high-level plan
+
+### Storage
+
+- **Audit events:** `storage/audit_events.jsonl` (append-only)
+- **Intake records:** `storage/intake_records.jsonl`
+
+---
+
+## Demo script v3 (locked April 28)
+
+Saved at `/mnt/user-data/outputs/kin-demo-script-v3.md`. Three updates from v2:
+
+1. Cold open compressed (-1s by trimming ping demonstration)
+2. Beat 5 closing VO names `flag_minor` tool call
+3. Queue rail glimpse (1-2s in Beat 5→6 transition, establishes Mohammed exists in queue before match fires)
+4. Beat 7 expanded 10s→13s with "audits the path that fired it" auditability framing
+5. Beat 8 trimmed 3s by removing "Still offline" callout (airplane icon delivers framing visually)
+
+**Total runtime:** 2:19 target, 174 VO words, ≤2.0 wps sustainable.
+
+**Load-bearing silences (do not fill in post):**
+- 0:00–0:09 cold open
+- 0:09–0:13 face-hold opening Segment 2
+- 1:22–1:25 silent transition into Segment 6 (architectural pivot)
+- 1:54–1:57 post-"One child. Found."
+
+**Recording mode:** Chunked recording per segment, VO recorded separately, assembled in edit.
+
+---
+
+## QA history
+
+| QA | After | Verdict | Findings |
 |---|---|---|---|
-| Phase 1: orchestration build | Apr 29 - May 1 | S1-S6 | ✅ DONE |
-| Bundle 1: SSE + four UI affordances | May 2-4 | ~6 sessions | NEXT |
-| Bundle 2: Tent A snapshot + smoke | May 5-6 | ~3-4 sessions | Pending Fiverr Arabic |
-| Safety-net video window | May 7-9 | recording, light CC support | — |
-| Feature freeze | May 10 | — | — |
-| Polish + LLM-as-judge passes | May 10-12 | ~4-5 sessions | — |
-| Final video production | May 13-15 | recording, light CC support | — |
-| Submit | May 16 | — | — |
-| Deadline buffer | May 17 | — | — |
-
-LLM-as-judge passes per SKILL Phase 5.5: three total — post-orchestration (~May 6), post-freeze (~May 11), post-video (~May 15).
+| QA-1 | S4 + S4-fix | PASS | 9/11 criteria, 2 punted (font/color cosmetic); led to S4-fix (preserve view on reset, last-writer-wins) |
+| QA-2 | S5 | PASS clean | First end-to-end real intake; minor flag fired correctly; source-language preservation held; "name field noise" was operator error (re-recorded same turn — extend path's last-writer-wins worked as designed) |
+| QA-3 | S6-fix2 | PASS | Beat 7 Spanish crisis verified end-to-end with real audio: deterministic safety classifier fired on `quiero morir` substring match, escalate_crisis Gemma tool returned valid args, locale_aware_message rode the POST response, overlay rendered Gemma's body (not static fallback). Surfaced two polish-week items (diacritic normalization in safety_rules; SSE replay re-pinning intakeId after Reset) — both deferred to Bundle 1.5. |
 
 ---
 
-## Pending Mark async tracks
+## LLM-as-judge & demo coach passes
 
-These don't block Bundle 1 but have downstream deadlines.
+### Pass #1 (April 28, post-PRFAQ + initial demo script)
 
-- **Fiverr orders.** Hold-until-May-1 over. Spanish (gigs 1, 2A) and Arabic (gigs 2B, 3) ready to release. Skip Order 4 (Farsi). Delivery May 5-7 lands before safety-net window.
-- **Spanish self-recording.** 15 min, anytime. Useful to have non-TTS Spanish in `audio_samples/` before Bundle 1 ships, so SSE rendering demos against natural audio. Optional but worthwhile.
-- **Caseworker outreach batch.** ~20 humanitarian-org cold emails (ICRC, IRC, UNHCR, HIAS, MSF, etc.) for 15-30 sec testimonial. Deadline May 6 to incorporate into final video. Async, no blocker.
-- **PROJECT_PLAN.md.** Surgical update to replace abstract Day-counter §4 with the 17-day calendar plan, and reflect Phase 1 closure in §7. Async; doesn't block any bundle.
+Three-judge panel: 8.3 (DeepMind ML) / 7.7 (Humanitarian) / 8.5 (Hackathon-feel) = 8.17 composite.
 
----
+**Push-back pass corrected several recommendations:**
+- ACCEPT: Pre-warm pipeline (highest leverage); name `flag_minor` in VO; recording crop verification; engineering rigor screenshot (use AST-layer-boundary-failure-on-deliberate-violation, not pytest dots)
+- REJECT: Cutting Beat 6 transition (load-bearing); cutting Beat 8 (Anthropic API + multi-turn + caseworker positioning is credibility purchase for DeepMind judges)
+- PARTIAL: False-positive crisis paragraph reframed as decision-support not validation promise; hardware paragraph reframed as confident quality-vs-hardware tradeoff with Gemma 4 270M as v0.5 path
+- MISSED BY PANEL: Queue rail icon glimpse before Beat 6 to establish Mohammed exists in queue before match fires
 
-## File reference
-
-### Code
-
-- `src/core/` — pure logic, no I/O
-  - `clock.py` — Clock Protocol with `monotonic()` + `now()`
-  - `storage_schemas.py` — IntakeRecord, MatchLink, AuditEvent (Pydantic v2, Literal types)
-  - `tool_calling.py` — ToolCallResult Pydantic model
-  - `matching.py` — locked algorithm (Jaro-Winkler + composite); see `docs/matching.md`
-  - `safety_rules.py` — keyword-based crisis classifier
-  - `language_matrix.py` — language → script mapping
-  - `rfl_schema.py` — in-flight extraction model
-
-- `src/integration/` — adapters and orchestration
-  - `transcription_pipeline.py` — `ingest_audio`, `_trigger_matching`, `_to_rfl_record`, `transcribe_and_translate`
-  - `ollama_adapter.py` — `translate()`, `tool_call()`, retry+timeout logic, ADR-003 enforcement
-  - `whisper_adapter.py` — Whisper transcription wrapper
-  - `storage_adapter.py` — JSONL CRUD, audit-event auto-write
-  - `system_clock.py` — production Clock implementation
-  - `extraction_tools.py` — EXTRACT_INTAKE_FIELDS_TOOL JSON Schema, ExtractIntakeFieldsArgs Pydantic model
-  - `_errors.py` — adapter exception hierarchy
-
-- `tests/`
-  - `tests/core/` — schema tests, pure-logic tests
-  - `tests/integration/` — adapter tests, pipeline tests, smoke test
-  - `tests/fakes/` — FakeClock and other test doubles
-  - `tests/test_layer_boundaries.py` — AST-enforced layer rules
-  - `tests/test_clock_protocol.py` — Clock conformance
-
-### Docs
-
-- `docs/ADR/001-web-ui-primary-demo-surface.md`
-- `docs/ADR/003-gemma-think-false.md`
-- `docs/ADR/004-orchestration-architecture.md`
-- `docs/ADR/005-sse-tests-use-real-uvicorn.md` — Bundle 1 S1: SSE route tests use real uvicorn fixture, not httpx.ASGITransport
-- `docs/matching.md` — locked matching algorithm + §9 runtime trigger entry point
-- `docs/architecture-diagram.{mmd,png}` — Devpost-quality system diagram
-- `docs/architecture-diagram-legend.png`
-- `docs/architecture-diagram-CHANGES.md`
-
-### Runtime (gitignored)
-
-- `storage/intake_records.jsonl`
-- `storage/match_links.jsonl`
-- `storage/audit_events.jsonl`
-
-### Demo assets
-
-- `audio_samples/spanish_intake_tts_01.wav` — TTS Spanish, used in S6 smoke test
-- `audio_samples/raw/` — Fiverr destination (empty until May 5+)
-- `seeds/tent_a_mohammed_snapshot.json` — to be generated in Bundle 2
+**Pass #2 scheduled:** ~May 11 against revised script + Bundle 1.5 build
+**Demo coach pass (Phase 5.7):** prompt undrafted; runs against v3 script before safety-net video
 
 ---
 
-## Phase 1 retrospective (carry into next bundles)
+## Polish-week task list
 
-What worked, in priority order:
+Items accumulating; lives here as the canonical list:
 
-1. **Cross-session decisions locked at planning gate.** IntakeRecord shape, audit-event mapping ownership, concurrency model, mapping rules — once decided, never relitigated. Saved hours of mid-session re-deciding.
-2. **Pre-flight Boss-mode questions before each session.** ~30 seconds to answer; cost of wrong answer mid-session would've been hours.
-3. **Plan-approve-execute discipline.** No silent decisions, no surprise commits. Course-correction between sessions instead of after.
-4. **Test budget caps in the brief.** Pulled discipline out of the brief, not relying on agent restraint.
-5. **ITEM E (audit-event mapping) as verification, not implementation.** Walking the table at S5 entry was the right move; mapping was satisfied incrementally across S2-S5.
-6. **One commit per session.** Clean rollback boundaries.
-
-What to adjust:
-
-- S5 plan got long because three concerns (matching trigger, audit verification, ADR-004) bundled together. Worth tighter session scopes when work has natural seams. But tight coupling here was real — a fourth session would've been ceremony.
-- Stub class proliferation (test_ingest_audio.py's _OllamaStub, test_matching_trigger.py's setup) is small but compounding. Worth a brief shared-test-fixtures pass somewhere in May 10-12 polish window.
-
----
-
-## Open questions for next bundle (Bundle 1 planning gate)
-
-These are not pre-resolved. They surface at Bundle 1's planning gate as Boss-mode questions.
-
-- **SSE protocol:** raw EventSource via FastAPI StreamingResponse, or sse-starlette dependency, or asyncio-based generator? Trade-off: dependency weight vs implementation complexity.
-- **Reconnection strategy:** auto-reconnect with backoff, or manual reconnect on user action? Demo needs deterministic behavior; production would want auto-reconnect.
-- **Event filtering:** does the SSE endpoint serve all audit events, or filter by `source_device_id` server-side? Two-device differentiation (Bundle 1 affordance b) needs per-device streams.
-- **Frontend state management:** plain useReducer, Zustand, or other? Existing React app's pattern from Days 1-7 dictates.
-- **Beat 5 progressive-fill mechanism:** three sequential audio files (per Part 3 Issue 1) or SSE-side staggered rendering? ADR-004 deferred this to Bundle 1.
-- **`full_name_transliteration` UI affordance state:** Day 11 prereq verification confirmed State 3 (no IntakePanel transliteration field exists) — needs build in Bundle 1 Affordance (b.1). Verify still true at Bundle 1 entry.
-
----
-
-## Forward notes (active during Bundle 1, surface at relevant session entry)
-
-These are not Boss-mode questions for the planning gate; they are short carry-forward reminders that future-session CC should encounter and decide on. Add new ones at session-end verdict; remove when resolved.
-
-- **Split-mode IntakePanel uses SimpleVoicePanel (compact).** S3 introduced a compact voice-status row inside `IntakePanel` because two full `VoicePanel` components would dominate the viewport in split-view. If the demo storyboard wants the full `VoicePanel` visible in split mode, that is an S7 polish call (or earlier if recording reveals it). Not blocking S4-S6.
-
-- **React `Language` type out of sync with Python `SupportedLanguage` enum.** [src/ui/web/src/lib/types.ts:9](src/ui/web/src/lib/types.ts#L9) defines `Language = 'en' | 'es' | 'ar' | 'fa'`. Python's enum at [src/core/storage_schemas.py:39](src/core/storage_schemas.py#L39) is `'en' | 'es' | 'ar' | 'fa' | 'fr' | 'uk'`. UK and FR exist as data-layer capacity only — not in the demo path — so the mismatch is harmless today, but a UK record arriving via SSE would surface a TS error somewhere. Reconcile in polish week or post-bundle handoff. Not blocking S4-S7.
+1. React Language type drift reconcile (`src/ui/web/src/lib/types.ts:9`)
+2. Three concurrent EventSource cleanup (App-level unfiltered hook unused in split mode) — may absorb into Bundle 1.5
+3. AST-layer-boundary-violation screenshot for Devpost writeup
+4. Hardware-tier paragraph (confident framing, Gemma 4 270M as v0.5 path)
+5. False-positive crisis paragraph (decision-support, auditable structlog framing)
+6. Recording crop verification at 1080p (HUD invisible)
+7. LLM-as-judge pass #2 (~May 11, post-Bundle-1.5)
+8. Demo coach pass on v3 script (Phase 5.7, separate Opus thread)
+9. Match view viewport cramp at <1400px (~10 lines CSS, Bundle 1.5)
+10. `mypy` not installed in `.venv` (CLAUDE.md mandates `mypy --strict`; pre-existing tooling gap from initial setup)
+11. `tests/ui/server/test_sse.py` requires `KIN_DISABLE_WARMUP=1` (pre-push tier should set env var or fix fixture)
+12. Verify `normalize_date` fires for relative dates ("dos semanas" captured but not normalized in QA-2)
+13. Confirm spoken-language source (auto-detect vs hardcoded)
+14. Verify Carlos record persisted despite "queued locally" count change observed in QA-2
+15. Possibly v4 script revision based on QA-3 timing reality
+16. Forward-note from S3: SimpleVoicePanel used in split mode; if demo wants full VoicePanel in split, post-Bundle-1 polish call
+17. Extraction sanity-check on name field (low-confidence flag for noise outputs)
+18. UK/FR `Language` type alignment between Python and React
+19. Codebase stats artifact (`briefs/codebase-stats.md` if Mark wants longitudinal tracking)
+20. Devpost per-prize "Why this wins" paragraphs
+21. Multi-prize stacking — enter every category that remotely qualifies
+22. Citation pass for all quantitative claims (PRFAQ Step 3A-2 work)
+23. **(QA-3) Diacritic normalization in `safety_rules.classify`**: Whisper transcription of Spanish utterances can include accented vowels (e.g. `suicidió` instead of `suicidio`) that defeat substring keyword matching. Cleanest fix is `unicodedata.normalize('NFKD', text)` + diacritic strip before substring check. Same fix applies to all 6 implemented languages, but Spanish is the demo-bearing case.
+24. **(QA-3) SSE replay re-pinning `intakeId` after Reset**: the `intake_created` reducer transition unconditionally sets `intakeId`, so an SSE reconnect (or fresh page load) over a non-empty audit log re-pins to the last record. Reset clears it, but the next replay restores it. Cleanest fix is to guard `intake_created` with `state.intakeId === null` so replay can't overwrite a manual clear. Touched naturally by Bundle 1.5's nav refactor.
+25. **(S7) Last-writer-wins on extend path can clobber unrelated fields**: turn 3 extending an existing intake can have Gemma re-emit defaults for fields turn 3 didn't speak about (observed in extend smoke: turn 3 about distinguishing marks reset `is_minor` to false). Likely fix: filter `extract_intake_fields` output to only fields the model produced non-default values for, OR make the storage update path ignore explicit-null/empty assignments on extend. Smoke test acknowledges as known item.
+26. **(S7) `unused phase/timerSec/timerRunning` props on `IntakePanelProps`**: vestigial layout-consistency props passed but unused inside `IntakePanel`. Pruning is mechanical; deferred from S7 to keep blast radius scoped.
 
 ---
 
-## Contact pattern with strategy thread (Mark + Claude as orchestrator)
+## Bundle 1 close — what shipped, what remains
 
-Mark uses Claude in two roles:
+**S7 delivered:**
+- Beat 6 merge animation: `kin-merge-pulse` keyframe (1100ms green box-shadow ring) + `prefers-reduced-motion` accessibility floor flattening all `kin-*` animations to instant. SSE-driven trigger in App.tsx — first `match_proposed` event arrival drives view → `match` and steps the phase machine through split → linking → merged. Idempotent via `matchAnimationFiredRef`. Existing `TransliterationMatch` component re-used; no new component needed.
+- Extend smoke (3 turns Spanish, real Whisper + Gemma) + crisis smoke (single turn Spanish crisis keyword, real Whisper + Gemma + escalate_crisis). Locks the ADR-004 REV 3 contract end-to-end: `locale_aware_message` arrives non-empty on the tuple return.
+- Dead `onBegin` prop indirection deleted across `VoicePanelProps` + `IntakePanelProps` + 4 call sites + 4 test fixtures. `runDemo()` itself preserved — DemoDock's "Start demo" button is the architecturally-committed offline fallback.
+- QA-3 PASS verdict landed.
 
-1. **Strategy thread (this is Mark's chat with Claude):** brief drafting, retrospectives, boss-mode question answering, bundle planning. Reads HANDOFF.md and bundle context docs.
-2. **Implementation agent (Claude Code in IDE):** executes session plans, returns verdicts. Receives the brief from strategy thread; doesn't see strategy thread chat history.
-
-The implementation agent is short-context. It knows what the brief tells it. The strategy thread (or successor) is long-context across the project; HANDOFF.md is what survives compaction.
+**Bundle 1 final state:**
+- 14 commits (db200eb → a08b546)
+- 12,714 total lines (3,781 prod / 4,676 tests / 4,176 TS-TSX / 81 CSS)
+- 139 fast Python + 3 smokes + 35 Vitest + AST layer-boundary enforcement + TS strict + Vite 53-module 196KB build
+- 4 ADRs + ADR-004 across REV 1/2/3 documenting the orchestration evolution
 
 ---
 
-**End of handoff. Bundle 1 brief lives in `briefs/bundle-1-context.md` (or wherever Mark places it).**
+## Forward notes for Bundle 1.5
+
+6 sessions per Round 2 design:
+
+1. Rail nav (44px icon rail, always visible)
+2. Voice panel state machine
+3. Tool-calls sidebar production polish (Stripe-API-docs aesthetic)
+4. Structlog sidebar polish + match toast + auto-route
+5. Match view layout (Cross-session match under review) + viewport cramp fix
+6. Queue view + coach-mark + `⌘⇧P` presentation mode + DemoDock gating + integration smoke
+
+Three remaining Round 2 design questions need answers BEFORE Bundle 1.5 starts:
+- Crisis state design (✅ done)
+- Split view layout (clarify Round 2 vs S3 canonical)
+- Match view layout clip (real but minor)
+
+**Polish-week items naturally absorbed by Bundle 1.5 (item numbers reference list above):**
+- #2 (three EventSource cleanup) — App-level state touched by nav refactor
+- #9 (match view viewport cramp <1400px) — match view layout session
+- #18 (UK/FR Language type alignment) — type cleanup pass
+- #24 (SSE replay re-pinning intakeId) — App-level state touched by nav refactor
+- #26 (vestigial IntakePanelProps) — prop hygiene during voice panel state-machine session
+
+---
+
+## Forward notes for Bundle 2
+
+Tent A Mohammed pre-seed snapshot + match smoke (Carlos+scar ↔ Mohammed+scar via name + distinguishing-feature composite match).
+
+This unblocks Beat 6 of the demo storyboard. Without Bundle 2, Beat 6 cannot record end-to-end.
+
+---
+
+## Critical reminders for future agents
+
+1. **Plan-approve-execute is non-negotiable.** Never execute without an approved plan.
+2. **Test budget hits floor first.** Headroom for genuine gaps, not pre-planned expansion.
+3. **No `git push` without explicit instruction.** All commits local.
+4. **No new dependencies without escalation.** Both Python and React.
+5. **Source-language preservation is architectural commitment, not preference.** Don't translate to English on storage.
+6. **`safety_rules.classify` is the sole safety gate.** Gemma is formatter on crisis path, never classifier.
+7. **ADR-004 REV 2 is intentional.** Reversion criterion: harm we cannot detect, not architectural cleanness.
+8. **The video IS the product.** For online Devpost hackathons, judges never run code. Demo script v3 is the artifact that determines outcome.
+9. **Solo-build framing is a strength, not an apology.** "Built by one solo developer in 24 days with 12.7K lines and 1.24 test ratio" — flex it.
+10. **Compaction is fine; restart is not.** When the conversation compacts, accumulated context preserves. Don't restart with a new agent unless absolutely necessary.
+
+---
+
+---
+
+## Bundle 1 close marker
+
+**Bundle 1 architecturally closed: April 29, 2026, post-S7 commit `a08b546`.**
+
+The runtime spine — SSE pipeline, two-panel split view, mic capture, extend path, crisis branch with Gemma escalate_crisis tool, Beat 6 merge animation, integration smoke for both extend and crisis paths — is shipped. Demo-day infrastructure ready to record. Bundle 1.5 (Round 2 nav refactor) drafts next.
+
+**End HANDOFF.**

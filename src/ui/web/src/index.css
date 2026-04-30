@@ -61,3 +61,21 @@ body {
   to   { transform: translate(-50%, 0);    opacity: 1; }
 }
 .kin-rise { animation: kin-rise 200ms ease-out; }
+
+@keyframes kin-merge-pulse {
+  0%   { box-shadow: 0 0 0 0 oklch(0.55 0.11 155 / 0.45); }
+  50%  { box-shadow: 0 0 0 10px oklch(0.55 0.11 155 / 0); }
+  100% { box-shadow: 0 0 0 0 oklch(0.55 0.11 155 / 0); }
+}
+.kin-merge-pulse { animation: kin-merge-pulse 1100ms ease-out 200ms 1 both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kin-rise,
+  .kin-link-draw,
+  .kin-merge-pulse,
+  .kin-populate,
+  .kin-slide-in-right,
+  .kin-wave-bar {
+    animation: none !important;
+  }
+}

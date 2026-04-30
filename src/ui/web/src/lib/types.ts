@@ -6,7 +6,12 @@ import type { ReactNode } from 'react';
 
 // ----- Locale + state unions -----
 
-export type Language = 'en' | 'es' | 'ar' | 'fa';
+/* Aligned with Python core.language_matrix.SupportedLang.
+   Bundle 1.5 S6 extended from 4-tuple (en/es/ar/fa) to 6-tuple to
+   match the speaker_language selector and close polish item #18.
+   Backend has FLEURS-validated coverage for fr/uk; demo continues
+   featuring en/es/ar/fa (CLAUDE.md §"Confirmed demo languages"). */
+export type Language = 'en' | 'es' | 'ar' | 'fa' | 'fr' | 'uk';
 
 export type MatchPhase = 'split' | 'linking' | 'merged';
 

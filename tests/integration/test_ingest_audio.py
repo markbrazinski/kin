@@ -112,7 +112,7 @@ async def test_ingest_audio_happy_path_spanish_carlos(tmp_path: Path) -> None:
         ),
     )
 
-    record = await ingest_audio(
+    record, locale_message = await ingest_audio(
         audio,
         "es",
         "tent_a",
@@ -120,6 +120,9 @@ async def test_ingest_audio_happy_path_spanish_carlos(tmp_path: Path) -> None:
         ollama=ollama,
         storage=storage,
     )
+
+    # ADR-004 REV 3: non-crisis branch returns (record, None).
+    assert locale_message is None
 
     # Returned record fields.
     assert record.full_name_source_script == "Carlos"
@@ -178,7 +181,7 @@ async def test_ingest_audio_crisis_path_arabic_skips_extraction(
         ),
     )
 
-    record = await ingest_audio(
+    record, locale_message = await ingest_audio(
         audio,
         "ar",
         "tent_b",
@@ -193,6 +196,9 @@ async def test_ingest_audio_crisis_path_arabic_skips_extraction(
     assert record.referral_issued is True
     # S6: Gemma override populates referral_organization (locale-aware).
     assert record.referral_organization == "الصليب الأحمر"
+    # ADR-004 REV 3: crisis branch surfaces locale_aware_message
+    # through the tuple return for the route layer.
+    assert locale_message == "يرجى الاتصال بالرقم..."
 
     # extract_intake_fields skipped; escalate_crisis invoked once.
     assert len(ollama.tool_call_calls) == 1
@@ -231,7 +237,7 @@ async def test_ingest_audio_partial_status_when_relationship_missing(
         ),
     )
 
-    record = await ingest_audio(
+    record, _ = await ingest_audio(
         audio,
         "es",
         "tent_a",
@@ -269,7 +275,7 @@ async def test_ingest_audio_minor_age_emits_minor_flagged_structlog(
     )
 
     with structlog.testing.capture_logs() as cap_logs:
-        record = await ingest_audio(
+        record, _ = await ingest_audio(
             audio,
             "es",
             "tent_a",
@@ -310,7 +316,7 @@ async def test_ingest_audio_arabic_native_script_preservation(
         ),
     )
 
-    record = await ingest_audio(
+    record, _ = await ingest_audio(
         audio,
         "ar",
         "tent_a",
@@ -390,7 +396,7 @@ async def test_ingest_audio_match_fires_on_second_mohamad_ingest(
             },
         ),
     )
-    record_a = await ingest_audio(
+    record_a, _ = await ingest_audio(
         audio_a,
         "ar",
         "tent_a",
@@ -415,7 +421,7 @@ async def test_ingest_audio_match_fires_on_second_mohamad_ingest(
     )
 
     with structlog.testing.capture_logs() as cap_logs:
-        record_b = await ingest_audio(
+        record_b, _ = await ingest_audio(
             audio_b,
             "ar",
             "tent_b",
@@ -478,7 +484,7 @@ async def test_ingest_audio_crisis_path_uses_gemma_referral(
         ),
     )
 
-    record = await ingest_audio(
+    record, _ = await ingest_audio(
         audio,
         "es",
         "tent_a",
@@ -525,7 +531,7 @@ async def test_ingest_audio_crisis_path_falls_back_to_static_lookup(
     whisper = _WhisperStub(text="me suicido ahora")
     ollama = _RaisingOllama(english="I'm killing myself now")
 
-    record = await ingest_audio(
+    record, _ = await ingest_audio(
         audio,
         "es",
         "tent_a",
@@ -569,7 +575,7 @@ async def test_ingest_audio_crisis_extend_still_raises_value_error(
             arguments={"full_name": "Carlos", "relationship": "hijo"},
         ),
     )
-    seed_record = await ingest_audio(
+    seed_record, _ = await ingest_audio(
         audio,
         "es",
         "tent_a",

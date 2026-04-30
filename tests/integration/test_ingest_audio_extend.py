@@ -95,7 +95,7 @@ async def test_ingest_audio_extend_path_merges_fields(tmp_path: Path) -> None:
             arguments={"full_name": "Carlos", "relationship": "hijo"},
         ),
     )
-    record1 = await ingest_audio(
+    record1, _ = await ingest_audio(
         audio,
         "es",
         "tent_a",
@@ -120,7 +120,7 @@ async def test_ingest_audio_extend_path_merges_fields(tmp_path: Path) -> None:
             },
         ),
     )
-    record2 = await ingest_audio(
+    record2, _ = await ingest_audio(
         audio,
         "es",
         "tent_a",
@@ -192,7 +192,7 @@ async def test_ingest_audio_extend_raises_on_crisis_branch(
             arguments={"full_name": "Carlos", "relationship": "hijo"},
         ),
     )
-    record = await ingest_audio(
+    record, _ = await ingest_audio(
         audio,
         "es",
         "tent_a",

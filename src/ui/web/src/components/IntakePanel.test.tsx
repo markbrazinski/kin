@@ -1,11 +1,29 @@
 /* IntakePanel split-view tests — verifies per-device subscription
-   isolation and tent attribute rendering. */
-import { describe, it, expect, beforeEach } from 'vitest';
+   isolation, tent attribute rendering, and SimpleVoicePanel phase UI. */
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import { MockEventSource } from '../test-utils/MockEventSource';
-import { IntakePanel } from './IntakePanel';
 import type { EventSourceFactory } from '../hooks/useEventStream';
 import type { AuditEnvelope } from '../lib/sseEnvelope';
+
+/* Mockable voice phase for the SimpleVoicePanel parameterized
+   render test below. The 5 existing tests don't assert phase strings,
+   so they pass regardless of the mocked default ('ready'). */
+const mockPhase = {
+  current: 'ready' as 'ready' | 'awaiting' | 'recording' | 'transcribing' | 'extracting' | 'done',
+};
+vi.mock('../hooks/useVoicePhase', () => ({
+  useVoicePhase: () => ({
+    phase: mockPhase.current,
+    isCrisis: false,
+    onBegin: vi.fn(),
+    onStop: vi.fn(),
+    reset: vi.fn(),
+  }),
+}));
+
+import { IntakePanel } from './IntakePanel';
+import { voiceCopy } from '../lib/voiceCopy';
 
 const factory: EventSourceFactory = (url) =>
   new MockEventSource(url) as unknown as ReturnType<EventSourceFactory>;
@@ -31,16 +49,16 @@ function makeFieldExtractedEnvelope(value: string): AuditEnvelope {
 }
 
 const baseProps = {
-  lang: 'en' as const,
-  phase: 'ready' as const,
+  workerLanguage: 'en' as const,
+  speakerLanguage: 'en' as const,
   timerSec: 0,
   timerRunning: false,
-  onBegin: () => {},
   crisisOpen: false,
 };
 
 beforeEach(() => {
   MockEventSource.reset();
+  mockPhase.current = 'ready';
 });
 
 describe('IntakePanel', () => {
@@ -152,4 +170,52 @@ describe('IntakePanel', () => {
     );
     expect(input).toBeNull();
   });
+});
+
+describe('SimpleVoicePanel — parameterized phase render (compact UI)', () => {
+  type Phase = 'ready' | 'awaiting' | 'recording' | 'transcribing' | 'extracting' | 'done';
+  const ALL_PHASES: Phase[] = ['ready', 'awaiting', 'recording', 'transcribing', 'extracting', 'done'];
+  const SHOW_BEGIN: Phase[] = ['ready', 'done'];
+  const SHOW_STOP_COMPACT: Phase[] = ['recording'];
+
+  for (const phase of ALL_PHASES) {
+    it(`compact panel renders correctly for phase=${phase}`, () => {
+      mockPhase.current = phase;
+      const { unmount } = render(
+        <IntakePanel
+          sourceDeviceId="tent_a"
+          tent="a"
+          panelLabel="Tent A"
+          eventSourceFactory={factory}
+          {...baseProps}
+        />,
+      );
+
+      // Caption matches voiceCopy[phase].en, with aria-live polite.
+      const caption = screen.getByText(voiceCopy[phase].en);
+      const liveRegion = caption.closest('[aria-live="polite"]');
+      expect(liveRegion).not.toBeNull();
+
+      // Begin in {ready, done} only.
+      const beginBtn = screen.queryByRole('button', { name: 'Begin' });
+      if (SHOW_BEGIN.includes(phase)) {
+        expect(beginBtn).not.toBeNull();
+      } else {
+        expect(beginBtn).toBeNull();
+      }
+
+      // Stop in compact mode is recording only (compact UI doesn't
+      // surface Stop during transcribing/extracting since useMicCapture
+      // already returned to idle and the compact row stays terse).
+      const stopBtn = screen.queryByRole('button', { name: 'Stop' });
+      if (SHOW_STOP_COMPACT.includes(phase)) {
+        expect(stopBtn).not.toBeNull();
+        expect(stopBtn!.className).toMatch(/\btext-red\b/);
+      } else {
+        expect(stopBtn).toBeNull();
+      }
+
+      unmount();
+    });
+  }
 });

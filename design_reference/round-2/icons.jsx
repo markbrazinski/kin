@@ -1,0 +1,69 @@
+/* ============================================================================
+ * KIN — icons.jsx
+ * ----------------------------------------------------------------------------
+ * ADAPTATION NOTES FOR CC (Bundle 1.5 implementation):
+ *   • This file exists ONLY because the prototype runs from a single HTML
+ *     artifact with no bundler. In the real repo, REPLACE these with your
+ *     existing icon imports (lucide-react if that's what the codebase uses).
+ *   • Icon names map 1:1 to Lucide: IconMic→Mic, IconShield→Shield,
+ *     IconAlert→TriangleAlert, IconCheck→Check, IconLock→Lock,
+ *     IconLanguages→Languages, IconList→List, IconUser→User,
+ *     IconMapPin→MapPin, IconCamera→Camera, IconLink→Link,
+ *     IconSparkle→Sparkles, IconTerminal→Terminal, IconClock→Clock,
+ *     IconArrowRight→ArrowRight, IconChevron→ChevronDown, IconRotate→RotateCw
+ *   • Stroke width 1.75px is INTENTIONAL — gives a humanitarian-tool weight
+ *     between Lucide's default (2) and Phosphor-thin. Don't drop to 1.5.
+ *   • The base <Icon> wrapper sets `aria-hidden` — preserve this. Icons in
+ *     KIN are ALWAYS paired with text or have an aria-label on the parent
+ *     button; they never carry meaning alone.
+ * ============================================================================
+ * Inline Lucide-style icons — line, 1.75px stroke, original paths.
+ * Kept in one file so the artifact has no external icon package dependency. */
+const Icon = ({ children, size = 18, className = "", strokeWidth = 1.75, ...rest }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+    {...rest}
+  >
+    {children}
+  </svg>
+);
+
+const IconMic       = (p) => <Icon {...p}><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M8 21h8"/></Icon>;
+const IconPlay      = (p) => <Icon {...p}><path d="M6 4l14 8-14 8V4z"/></Icon>;
+const IconPause     = (p) => <Icon {...p}><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></Icon>;
+const IconShield    = (p) => <Icon {...p}><path d="M12 3l8 3v6c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V6l8-3z"/></Icon>;
+const IconLock      = (p) => <Icon {...p}><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></Icon>;
+const IconCloudOff  = (p) => <Icon {...p}><path d="M3 3l18 18"/><path d="M7 18h10a4 4 0 0 0 .7-7.95A6 6 0 0 0 6.3 8.3"/></Icon>;
+const IconCheck     = (p) => <Icon {...p}><path d="M5 12l4 4L19 6"/></Icon>;
+const IconAlert     = (p) => <Icon {...p}><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v5"/><circle cx="12" cy="18" r=".5" fill="currentColor"/></Icon>;
+const IconInfo      = (p) => <Icon {...p}><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="8" r=".5" fill="currentColor"/></Icon>;
+const IconArrowRight= (p) => <Icon {...p}><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></Icon>;
+const IconChevron   = (p) => <Icon {...p}><path d="M6 9l6 6 6-6"/></Icon>;
+const IconLanguages = (p) => <Icon {...p}><path d="M3 5h10"/><path d="M8 3v2"/><path d="M5 9c.5 3 2.5 5 5 6"/><path d="M11 9c-.5 3-2.5 5-5 6"/><path d="M13 21l5-10 5 10"/><path d="M15 17h6"/></Icon>;
+const IconUser      = (p) => <Icon {...p}><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 5-6 8-6s6.5 2 8 6"/></Icon>;
+const IconMapPin    = (p) => <Icon {...p}><path d="M12 21s-7-7.5-7-12a7 7 0 1 1 14 0c0 4.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/></Icon>;
+const IconCamera    = (p) => <Icon {...p}><path d="M4 7h3l2-2h6l2 2h3v12H4z"/><circle cx="12" cy="13" r="3.5"/></Icon>;
+const IconDev       = (p) => <Icon {...p}><path d="M8 6l-5 6 5 6"/><path d="M16 6l5 6-5 6"/></Icon>;
+const IconX         = (p) => <Icon {...p}><path d="M6 6l12 12"/><path d="M6 18L18 6"/></Icon>;
+const IconLink      = (p) => <Icon {...p}><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></Icon>;
+const IconSparkle   = (p) => <Icon {...p}><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="M6 6l2 2"/><path d="M16 16l2 2"/><path d="M6 18l2-2"/><path d="M16 8l2-2"/></Icon>;
+const IconRotate    = (p) => <Icon {...p}><path d="M4 12a8 8 0 0 1 14-5.3L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-14 5.3L4 16"/><path d="M4 20v-4h4"/></Icon>;
+const IconTerminal  = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M12 15h5"/></Icon>;
+const IconClock     = (p) => <Icon {...p}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></Icon>;
+
+Object.assign(window, {
+  Icon, IconMic, IconPlay, IconPause, IconShield, IconLock, IconCloudOff, IconCheck,
+  IconAlert, IconInfo, IconArrowRight, IconChevron, IconLanguages, IconUser,
+  IconMapPin, IconCamera, IconDev, IconX, IconLink, IconSparkle, IconRotate,
+  IconTerminal, IconClock,
+});

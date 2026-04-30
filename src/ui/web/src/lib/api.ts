@@ -3,6 +3,7 @@
 export type AudioUploadResponse = {
   intake_id: string;
   status: string;
+  locale_aware_message?: string | null;
 };
 
 export async function uploadAudioBlob(opts: {
