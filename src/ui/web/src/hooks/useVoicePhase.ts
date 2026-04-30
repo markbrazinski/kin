@@ -64,7 +64,7 @@ type State = {
 };
 
 type Action =
-  | { type: 'BEGIN'; currentPostStatus: PostStatus | null }
+  | { type: 'BEGIN' }
   | { type: 'STOP' }
   | { type: 'RESET' }
   | { type: 'MIC_RECORDING' }
@@ -85,15 +85,22 @@ function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'BEGIN':
       if (state.phase === 'ready' || state.phase === 'done') {
-        // Acknowledge the current lastPostStatus value so the
-        // POST_RESOLVED watcher won't refire on the unchanged value
-        // from the previous turn. The next genuine POST resolution
-        // will be a *change* and will fire normally.
+        // S5-fix: reset lastConsumedPostStatus to null on every new
+        // turn. Combined with the watcher's phase-gate (only fires
+        // POST_RESOLVED when phase is transcribing/extracting), this
+        // correctly handles BOTH:
+        //   (a) turn 1 completed → BEGIN turn 2 → setLastPostStatus
+        //       (null) propagates → no spurious fire (the original
+        //       turn1→turn2 bug guarded against)
+        //   (b) turn 2 POST resolves to 'completed' → watcher fires
+        //       because state.lastConsumedPostStatus is null and
+        //       phase is extracting (the new bug surfaced in S5
+        //       dry-run where multi-turn STUCK at extracting)
         return {
           ...state,
           phase: 'awaiting',
           isCrisis: false,
-          lastConsumedPostStatus: action.currentPostStatus,
+          lastConsumedPostStatus: null,
         };
       }
       return state;
@@ -162,8 +169,6 @@ function reducer(state: State, action: Action): State {
 export function useVoicePhase(inputs: VoicePhaseInputs): VoicePhaseResult {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const prevMicStateRef = useRef<MicState>('idle');
-  const postStatusRef = useRef<PostStatus | null>(inputs.lastPostStatus);
-  postStatusRef.current = inputs.lastPostStatus;
 
   /* Mic state edge detection: feed reducer only on transitions, not
      on every render. */
@@ -215,24 +220,25 @@ export function useVoicePhase(inputs: VoicePhaseInputs): VoicePhaseResult {
     });
   }, [inputs.auditEvents, state.seenAuditCount]);
 
-  /* POST status edge: advance to done exactly once per turn. */
+  /* POST status edge: advance to done exactly once per turn.
+     Phase-gated to {transcribing, extracting} so a stale 'completed'
+     value from the previous turn (left over briefly while
+     setLastPostStatus(null) propagates after BEGIN) doesn't fire
+     POST_RESOLVED while phase is ready/awaiting/recording/done. The
+     POST is sent at Stop click (which transitions recording ->
+     transcribing); it cannot resolve before that. So legitimate
+     POST_RESOLVED only ever arrives in transcribing or extracting. */
   useEffect(() => {
     if (
       inputs.lastPostStatus !== null &&
-      inputs.lastPostStatus !== state.lastConsumedPostStatus
+      inputs.lastPostStatus !== state.lastConsumedPostStatus &&
+      (state.phase === 'transcribing' || state.phase === 'extracting')
     ) {
       dispatch({ type: 'POST_RESOLVED', status: inputs.lastPostStatus });
     }
-  }, [inputs.lastPostStatus, state.lastConsumedPostStatus]);
+  }, [inputs.lastPostStatus, state.lastConsumedPostStatus, state.phase]);
 
-  const onBegin = useCallback(
-    () =>
-      dispatch({
-        type: 'BEGIN',
-        currentPostStatus: postStatusRef.current,
-      }),
-    [],
-  );
+  const onBegin = useCallback(() => dispatch({ type: 'BEGIN' }), []);
   const onStop = useCallback(() => dispatch({ type: 'STOP' }), []);
   const reset = useCallback(() => dispatch({ type: 'RESET' }), []);
 
