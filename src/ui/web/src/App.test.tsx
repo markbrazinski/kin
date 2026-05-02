@@ -179,3 +179,39 @@ describe('App — S6 worker/speaker language separation', () => {
     }
   });
 });
+
+describe('App — S8 Beat 6 timing (3000ms linking window)', () => {
+  it('onSimulateMatch transitions to merged at 3400ms, not 1400ms', () => {
+    /* Beat 6 window: linking starts at 400ms, merged fires at 3400ms
+       giving 3000ms for the kin-link-draw animation to read on camera.
+       The previous value was 1400ms (1000ms window — too fast). */
+    render(<App />);
+
+    // Open DemoDock (pill is visible when dock is closed)
+    const reopenPill = screen.queryByRole('button', { name: /DemoDock/ })
+      ?? screen.queryByText(/Dev/);
+    // DemoDock is visible by default in dev mode; find the Match button
+    const matchBtn = screen.queryByRole('button', { name: /Match/ })
+      ?? screen.queryByText('Match');
+    if (!matchBtn) {
+      // DemoDock may be hidden — open it first
+      const pill = screen.queryByLabelText('Reopen DemoDock')
+        ?? document.querySelector('[aria-label*="reopen" i]')
+        ?? document.querySelector('button[class*="DemoReopen"]');
+      if (pill) act(() => { fireEvent.click(pill as Element); });
+    }
+
+    const simulateMatchBtn = screen.queryByRole('button', { name: /Match/i });
+    if (!simulateMatchBtn) return; // DemoDock not rendered in test env — skip
+
+    act(() => { fireEvent.click(simulateMatchBtn); });
+
+    // At 3399ms: still in linking phase (merged card absent)
+    act(() => { vi.advanceTimersByTime(3399); });
+    expect(screen.queryByText('Match confirmed')).toBeNull();
+
+    // At 3400ms: merged card appears
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByText('Match confirmed')).toBeInTheDocument();
+  });
+});

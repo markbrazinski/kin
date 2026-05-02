@@ -733,10 +733,10 @@ function App() {
     setView("match");
     setMatchPhase("split");
     const t0 = performance.now();
-    logCall({ name: "fuzzy_match", args: { a: "Omar Al-Saleh", b: "Umar Alsaleh" }, result: "candidate" }, 0);
+    logCall({ name: "fuzzy_match", args: { a: "Mohammed", b: "Mohamad" }, result: "candidate" }, 0);
     setTimeout(() => {
       logCall({ name: "transliteration_comparison",
-                args: { source: "عمر الصالح", variants: ["Omar", "Umar"] },
+                args: { source: "محمد", variants: ["Mohammed", "Mohamad"] },
                 result: "match_confidence=high",
                 highlight: true }, performance.now() - t0);
       setMatchPhase("linking");
@@ -745,7 +745,7 @@ function App() {
       logCall({ name: "merge_records", args: { ids: [89, 147] }, result: "pending_review" },
               performance.now() - t0);
       setMatchPhase("merged");
-    }, 1400);
+    }, 3400);
   };
 
   const onSimulateCrisis = () => {
@@ -896,6 +896,7 @@ function App() {
               <TransliterationMatch
                 phase={matchPhase}
                 onBack={() => setView("single")}
+                workerLanguage={workerLanguage}
               />
             )}
 

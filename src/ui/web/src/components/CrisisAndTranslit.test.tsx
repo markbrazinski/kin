@@ -92,19 +92,15 @@ describe('CrisisReferralCard', () => {
 });
 
 describe('TransliterationMatch — Beat 6 merge animation (S7)', () => {
-  it('merged phase renders kin-rise + kin-merge-pulse on the merged card', () => {
+  it('merged phase renders kin-merge-pulse on the merged card', () => {
     const { container } = render(
       <TransliterationMatch phase="merged" onBack={() => {}} />,
     );
-    // The "Match confirmed" label is the unique anchor inside the
-    // merged card — its parent div carries the animation classes.
+    // S8: merged card no longer has kin-rise (that belongs on the
+    // absolute-positioned crisis modal only). It carries kin-merge-pulse.
     const matchLabel = screen.getByText('Match confirmed');
-    const mergedCard = matchLabel.closest('.kin-rise');
+    const mergedCard = matchLabel.closest('.kin-merge-pulse');
     expect(mergedCard).not.toBeNull();
-    expect(mergedCard!.classList.contains('kin-merge-pulse')).toBe(true);
-    // Negative control: when phase !== merged the merged card is
-    // not rendered at all (single Match confirmed in DOM only when
-    // we're on the merged phase).
     expect(container.querySelectorAll('.kin-merge-pulse').length).toBe(1);
   });
 
@@ -118,5 +114,146 @@ describe('TransliterationMatch — Beat 6 merge animation (S7)', () => {
     rerender(<TransliterationMatch phase="linking" onBack={() => {}} />);
     expect(container.querySelectorAll('.kin-merge-pulse').length).toBe(0);
     expect(screen.queryByText('Match confirmed')).toBeNull();
+  });
+});
+
+// S8 — dual-language rendering
+type MiniData = Parameters<typeof TransliterationMatch>[0]['recordA'];
+
+const AR_RECORD_A: MiniData = {
+  title: "Intake A · Session #089",
+  tone: "warm",
+  reporter: "محمد الأحمد · الأب",
+  reporterLatin: "Mohammed Al-Ahmad · Father",
+  speakerLanguage: "ar",
+  missingName: "محمد",
+  missingNameLatin: "Mohammed",
+  age: "8",
+  lastSeen: "منطقة الحدود · منذ أسبوعين",
+  lastSeenLatin: "Border zone · ~2 weeks ago",
+  circumstance: "انفصل عن عائلته أثناء الفوضى عند نقطة التفتيش",
+  circumstanceLatin: "Separated from family during chaos at the checkpoint",
+};
+
+const AR_RECORD_B: MiniData = {
+  title: "Intake B · Session #147",
+  tone: "cool",
+  reporter: "أمل الأحمد · الأم",
+  reporterLatin: "Amal Al-Ahmad · Mother",
+  speakerLanguage: "ar",
+  missingName: "محمد",
+  missingNameLatin: "Mohamad",
+  age: "8",
+  lastSeen: "منطقة الحدود · منذ أسبوعين تقريباً",
+  lastSeenLatin: "Border crossing area · ~2 weeks ago",
+  circumstance: "فُقد أثناء حشود اللاجئين عند نقطة العبور",
+  circumstanceLatin: "Lost during refugee crowd at the crossing",
+};
+
+const ES_RECORD: MiniData = {
+  title: "Intake A · Session #001",
+  tone: "warm",
+  reporter: "Ana García · Madre",
+  speakerLanguage: "es",
+  missingName: "Carlos",
+  age: "7",
+  lastSeen: "la frontera con Colombia",
+  circumstance: "Se separó durante el cruce",
+};
+
+describe('TransliterationMatch — S8 dual-language rendering', () => {
+  it('Arabic-Arabic: value containers have dir=rtl; field labels stay in LTR chrome', () => {
+    const { container } = render(
+      <TransliterationMatch
+        phase="split"
+        onBack={() => {}}
+        recordA={AR_RECORD_A}
+        recordB={AR_RECORD_B}
+      />,
+    );
+    // At least some value blocks are dir=rtl (one per card per field)
+    const rtlBlocks = container.querySelectorAll('[dir="rtl"]');
+    expect(rtlBlocks.length).toBeGreaterThan(0);
+
+    // Field label "Reporter" is NOT inside a dir=rtl element
+    const reporterLabel = screen.getAllByText('Reporter')[0];
+    const closestRtl = reporterLabel.closest('[dir="rtl"]');
+    expect(closestRtl).toBeNull();
+  });
+
+  it('mixed Spanish-Arabic: each record value block takes its own direction, chrome stays LTR', () => {
+    const { container } = render(
+      <TransliterationMatch
+        phase="split"
+        onBack={() => {}}
+        recordA={ES_RECORD}
+        recordB={AR_RECORD_B}
+      />,
+    );
+    // Arabic card has at least one dir=rtl value block
+    const rtlBlocks = container.querySelectorAll('[dir="rtl"]');
+    expect(rtlBlocks.length).toBeGreaterThan(0);
+
+    // Spanish name "Carlos" is NOT inside a dir=rtl block
+    const carlosEl = screen.getByText('Carlos');
+    expect(carlosEl.closest('[dir="rtl"]')).toBeNull();
+  });
+
+  it('Arabic speakerLanguage: source-script primary renders, Latin secondary renders for all fields', () => {
+    render(
+      <TransliterationMatch
+        phase="split"
+        onBack={() => {}}
+        recordA={AR_RECORD_A}
+        recordB={AR_RECORD_A}
+      />,
+    );
+    // Primary Arabic name
+    expect(screen.getAllByText('محمد').length).toBeGreaterThan(0);
+    // Latin secondary for name
+    expect(screen.getAllByText('Mohammed').length).toBeGreaterThan(0);
+    // lastSeen Arabic primary
+    expect(screen.getAllByText('منطقة الحدود · منذ أسبوعين').length).toBeGreaterThan(0);
+    // lastSeen Latin secondary
+    expect(screen.getAllByText('Border zone · ~2 weeks ago').length).toBeGreaterThan(0);
+  });
+
+  it('Spanish speakerLanguage: no Latin secondary lines rendered beneath values', () => {
+    const { container } = render(
+      <TransliterationMatch
+        phase="split"
+        onBack={() => {}}
+        recordA={ES_RECORD}
+        recordB={ES_RECORD}
+      />,
+    );
+    // "Carlos" appears exactly twice (one per card), no secondary duplicate
+    const carlosEls = screen.getAllByText('Carlos');
+    expect(carlosEls.length).toBe(2);
+
+    // No text nodes that are Latin translations of the Spanish values
+    // (ES_RECORD has no *Latin fields so no secondary divs rendered)
+    const secondaryDivs = container.querySelectorAll('[dir="ltr"].text-muted');
+    expect(secondaryDivs.length).toBe(0);
+  });
+
+  it('merged phase: Confirm/Reject/Escalate buttons visible', () => {
+    render(
+      <TransliterationMatch phase="merged" onBack={() => {}} />,
+    );
+    expect(screen.getByRole('button', { name: /Confirm match/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Escalate/ })).toBeInTheDocument();
+  });
+
+  it('split and linking phases render no Confirm/Reject/Escalate buttons (regression)', () => {
+    const { rerender } = render(
+      <TransliterationMatch phase="split" onBack={() => {}} />,
+    );
+    expect(screen.queryByRole('button', { name: /Confirm match/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Reject/ })).toBeNull();
+
+    rerender(<TransliterationMatch phase="linking" onBack={() => {}} />);
+    expect(screen.queryByRole('button', { name: /Confirm match/ })).toBeNull();
   });
 });

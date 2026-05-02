@@ -31,23 +31,39 @@ export type CrisisReferralCardProps = {
   onDeEscalated: () => void;
 };
 
-type MiniRecordTone = 'warm' | 'cool';
-
-type MiniRecordProps = {
-  title: ReactNode;
-  tone: MiniRecordTone;
-  reporter: ReactNode;
-  missingName: ReactNode;
-  missingScript: ReactNode;
-  age: ReactNode;
-  lastSeen: ReactNode;
-  circumstance: ReactNode;
+/* S8: per-record data shape for match view cards. Internal to this
+   file — not a Core schema mirror. Each field carries the source-
+   language value first; *Latin fields are the worker-language gloss
+   rendered beneath when speakerLanguage is non-Latin (ar/fa). */
+type MiniRecordData = {
+  title: string;
+  tone: 'warm' | 'cool';
+  reporter: string;
+  reporterLatin?: string;
+  speakerLanguage: Language;
+  missingName: string;
+  missingNameLatin?: string;
+  missingNameTranslit?: string;
+  age: string;
+  lastSeen: string;
+  lastSeenLatin?: string;
+  circumstance: string;
+  circumstanceLatin?: string;
 };
 
 export type TransliterationMatchProps = {
   phase: MatchPhase;
   onBack: () => void;
+  workerLanguage?: Language;
+  recordA?: MiniRecordData;
+  recordB?: MiniRecordData;
 };
+
+/* Returns true when speaker_language uses a non-Latin script that
+   needs a Latin secondary line for worker readability. */
+function needsTranslit(lang: Language): boolean {
+  return lang === 'ar' || lang === 'fa';
+}
 
 /* Localized crisis copy. Drives the displaced-person-facing surface
    (title, body fallback when Gemma's locale_aware_message is absent,
@@ -165,36 +181,65 @@ function CrisisReferralCard({
 }
 
 // --- Transliteration match view ------------------------------------------
-function MiniRecord({ title, tone, reporter, missingName, missingScript, age, lastSeen, circumstance }: MiniRecordProps) {
-  const toneBg = tone === "warm" ? "bg-[oklch(0.985_0.012_75)]" : "bg-[oklch(0.985_0.006_220)]";
+
+/* Renders one MiniRecord card. All field VALUES render in
+   speaker_language source script (dir-scoped). Field LABELS are
+   English LTR worker chrome. Latin secondary lines appear beneath
+   non-Latin values when needsTranslit(speakerLanguage) is true. */
+function MiniRecord({ record }: { record: MiniRecordData }) {
+  const toneBg = record.tone === "warm" ? "bg-[oklch(0.985_0.012_75)]" : "bg-[oklch(0.985_0.006_220)]";
+  const valueDir = dirFor(record.speakerLanguage);
+  const rtlClass = needsTranslit(record.speakerLanguage) ? "rtl" : "";
+  const showSecondary = needsTranslit(record.speakerLanguage);
+
   return (
     <div className={`flex-1 border border-line rounded-kin-lg ${toneBg}`}>
       <div className="px-5 py-3 border-b border-hair flex items-center justify-between">
-        <div className="text-[12px] font-medium uppercase tracking-wider text-muted">{title}</div>
+        <div className="text-[12px] font-medium uppercase tracking-wider text-muted">{record.title}</div>
         <Chip icon={<IconLock size={12} />} tone="neutral" className="!bg-white">Local only</Chip>
       </div>
       <div className="px-5 py-4">
-        <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Reporter</div>
-        <div className="text-[15px] text-ink mt-0.5">{reporter}</div>
 
+        {/* Reporter — LTR label, dir-scoped value */}
+        <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Reporter</div>
+        <div className="mt-0.5">
+          <div dir={valueDir} className={`text-[15px] text-ink ${rtlClass}`}>{record.reporter}</div>
+          {showSecondary && record.reporterLatin && (
+            <div dir="ltr" className="text-[12px] text-muted mt-0.5">{record.reporterLatin}</div>
+          )}
+        </div>
+
+        {/* Missing child — large name in source script, Latin gloss beneath */}
         <div className="mt-4 text-[12px] font-medium uppercase tracking-wider text-muted">Missing child</div>
-        <div className="mt-1 flex items-baseline gap-3">
-          <div className="text-[20px] font-semibold text-ink">{missingName}</div>
-          <div className="rtl text-[20px] text-ink/80">{missingScript}</div>
+        <div className="mt-1">
+          <div dir={valueDir} className={`text-[20px] font-semibold text-ink ${rtlClass}`}>{record.missingName}</div>
+          {showSecondary && record.missingNameLatin && (
+            <div dir="ltr" className="text-[13px] text-muted mt-0.5">{record.missingNameLatin}</div>
+          )}
+          {showSecondary && record.missingNameTranslit && (
+            <div dir="ltr" className="text-[12px] text-muted/70">also: {record.missingNameTranslit}</div>
+          )}
         </div>
 
         <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3">
           <div>
             <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Age</div>
-            <div className="text-[16px] text-ink">{age}</div>
+            {/* Age is a number — no direction needed */}
+            <div className="text-[16px] text-ink">{record.age}</div>
           </div>
           <div>
             <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Last seen</div>
-            <div className="text-[16px] text-ink">{lastSeen}</div>
+            <div dir={valueDir} className={`text-[16px] text-ink ${rtlClass}`}>{record.lastSeen}</div>
+            {showSecondary && record.lastSeenLatin && (
+              <div dir="ltr" className="text-[12px] text-muted mt-0.5">{record.lastSeenLatin}</div>
+            )}
           </div>
           <div className="col-span-2">
             <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Circumstance</div>
-            <div className="text-[16px] text-ink">{circumstance}</div>
+            <div dir={valueDir} className={`text-[16px] text-ink ${rtlClass}`}>{record.circumstance}</div>
+            {showSecondary && record.circumstanceLatin && (
+              <div dir="ltr" className="text-[12px] text-muted mt-0.5">{record.circumstanceLatin}</div>
+            )}
           </div>
         </div>
       </div>
@@ -202,12 +247,50 @@ function MiniRecord({ title, tone, reporter, missingName, missingScript, age, la
   );
 }
 
-function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
+/* Beat 6 demo data — hand-curated for Mohammed (Tent A) / Mohamad
+   (Tent B) match. Source-language fields first; Latin secondary lines
+   beneath for worker readability. Matches demo script v3. */
+const DEFAULT_RECORD_A: MiniRecordData = {
+  title: "Intake A · Session #089",
+  tone: "warm",
+  reporter: "محمد الأحمد · الأب",
+  reporterLatin: "Mohammed Al-Ahmad · Father",
+  speakerLanguage: "ar",
+  missingName: "محمد",
+  missingNameLatin: "Mohammed",
+  missingNameTranslit: undefined,
+  age: "8",
+  lastSeen: "منطقة الحدود · منذ أسبوعين",
+  lastSeenLatin: "Border zone · ~2 weeks ago",
+  circumstance: "انفصل عن عائلته أثناء الفوضى عند نقطة التفتيش",
+  circumstanceLatin: "Separated from family during chaos at the checkpoint",
+};
+
+const DEFAULT_RECORD_B: MiniRecordData = {
+  title: "Intake B · Session #147",
+  tone: "cool",
+  reporter: "أمل الأحمد · الأم",
+  reporterLatin: "Amal Al-Ahmad · Mother",
+  speakerLanguage: "ar",
+  missingName: "محمد",
+  missingNameLatin: "Mohamad",
+  missingNameTranslit: undefined,
+  age: "8",
+  lastSeen: "منطقة الحدود · منذ أسبوعين تقريباً",
+  lastSeenLatin: "Border crossing area · ~2 weeks ago",
+  circumstance: "فُقد أثناء حشود اللاجئين عند نقطة العبور",
+  circumstanceLatin: "Lost during refugee crowd at the crossing",
+};
+
+function TransliterationMatch({ phase, onBack, workerLanguage, recordA, recordB }: TransliterationMatchProps) {
   // 'split'   → two MiniRecord cards side by side, no link drawn
   // 'linking' → Y-shape link animates toward the match card
   // 'merged'  → MATCH CONFIRMED card with unified identity
   const showLink = phase === "linking" || phase === "merged";
   const merged   = phase === "merged";
+  const wl: Language = workerLanguage ?? "en";
+  const rA = recordA ?? DEFAULT_RECORD_A;
+  const rB = recordB ?? DEFAULT_RECORD_B;
 
   return (
     <div className="max-w-[960px] mx-auto w-full">
@@ -222,26 +305,8 @@ function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
       </div>
 
       <div className={`grid grid-cols-1 md:grid-cols-2 gap-5 transition-opacity duration-300 ${merged ? "opacity-30" : ""}`}>
-        <MiniRecord
-          title="Intake A · Session #089"
-          tone="warm"
-          reporter="Layla Al-Saleh · Mother"
-          missingName="Omar Al-Saleh"
-          missingScript="عمر الصالح"
-          age="9"
-          lastSeen="Ar-Raqqa outskirts · ~6 days ago"
-          circumstance="Separated during crowd surge leaving the neighbourhood"
-        />
-        <MiniRecord
-          title="Intake B · Session #147"
-          tone="cool"
-          reporter="Yousef Al-Saleh · Father"
-          missingName="Umar Alsaleh"
-          missingScript="عمر الصالح"
-          age="9"
-          lastSeen="Ar-Raqqa outskirts · ~6 days ago"
-          circumstance="Lost sight of him near the transit checkpoint"
-        />
+        <MiniRecord record={rA} />
+        <MiniRecord record={rB} />
       </div>
 
       {/* Animated Y-shape connector: two streams from the intake panel
@@ -271,9 +336,12 @@ function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
         )}
       </div>
 
-      {/* Merged card */}
+      {/* Merged card — worker_language chrome, Arabic source script at
+          top with Mohammed · Mohamad transliterations beneath. No
+          kin-rise here (that keyframe is for the absolute-positioned
+          crisis modal); kin-merge-pulse provides the entry beat. */}
       {merged && (
-        <div className="kin-rise kin-merge-pulse relative bg-card border border-green/40 rounded-kin-lg" style={{ transform: "none" }}>
+        <div className="kin-merge-pulse relative bg-card border border-green/40 rounded-kin-lg">
           <div className="px-6 py-4 border-b border-hair bg-green-soft/60 flex items-center gap-3">
             <div className="w-8 h-8 rounded-kin bg-white border border-green/40 text-green flex items-center justify-center">
               <IconLink size={16} />
@@ -286,38 +354,45 @@ function TransliterationMatch({ phase, onBack }: TransliterationMatchProps) {
           </div>
           <div className="px-6 py-5">
             <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Unified identity · missing child</div>
-            <div className="mt-2 flex flex-wrap items-baseline gap-x-6 gap-y-1">
-              <div className="rtl text-[28px] font-semibold text-ink">عمر الصالح</div>
-              <div className="text-[22px] text-ink">Omar Al-Saleh</div>
-              <div className="text-[16px] text-muted">· also: Umar Alsaleh</div>
+            {/* Arabic source script first — architectural commitment */}
+            <div className="mt-2">
+              <div dir="rtl" className="rtl text-[28px] font-semibold text-ink">محمد</div>
+              <div dir="ltr" className="text-[18px] text-ink mt-1">Mohammed · Mohamad</div>
             </div>
 
             <div className="mt-5 grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-4">
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Source script</div>
-                <div className="rtl text-[17px] text-ink mt-0.5">عمر الصالح</div>
+                <div dir="rtl" className="rtl text-[17px] text-ink mt-0.5">محمد</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Phonetic variants</div>
-                <div className="text-[15px] text-ink mt-0.5">Omar · Umar</div>
+                <div className="text-[15px] text-ink mt-0.5">Mohammed · Mohamad</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Age</div>
-                <div className="text-[15px] text-ink mt-0.5">9</div>
+                <div className="text-[15px] text-ink mt-0.5">8</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Linked sessions</div>
-                <div className="text-[15px] text-ink mt-0.5">#089 (Mother) · #147 (Father)</div>
+                <div className="text-[15px] text-ink mt-0.5">#089 (Father) · #147 (Mother)</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Last-seen overlap</div>
-                <div className="text-[15px] text-ink mt-0.5">Ar-Raqqa outskirts · ~6 days ago</div>
+                <div className="text-[15px] text-ink mt-0.5">Border zone · ~2 weeks ago</div>
               </div>
               <div>
                 <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Next step</div>
                 <div className="text-[15px] text-ink mt-0.5">Route to caseworker for reunification review</div>
               </div>
             </div>
+          </div>
+          {/* Cosmetic CTA buttons — wired in Item 11. Rendered in
+              worker_language (English). onClick intentionally absent. */}
+          <div dir={dirFor(wl)} className="border-t border-hair bg-subtle/40 px-6 py-3 flex flex-col sm:flex-row gap-2 sm:justify-end">
+            <Button variant="ghost">Escalate to supervisor</Button>
+            <Button variant="secondary">Reject</Button>
+            <Button variant="confirm" icon={<IconCheck size={16} />}>Confirm match</Button>
           </div>
         </div>
       )}
