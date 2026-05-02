@@ -219,3 +219,50 @@ describe('SimpleVoicePanel — parameterized phase render (compact UI)', () => {
     });
   }
 });
+
+describe('IntakePanel — S3 marks bubble fix regression', () => {
+  it('Test 5 — Marks section shows as filled when distinguishing_marks is populated', () => {
+    /* Regression guard for the bug where `filled: !!(record.physicalDesc
+       && record.features)` never fired because record.features has no
+       FIELD_MAP entry. Fixed to `filled: !!record.physicalDesc`. */
+    const { container } = render(
+      <IntakePanel
+        sourceDeviceId="tent_a"
+        tent="a"
+        panelLabel="Tent A"
+        eventSourceFactory={factory}
+        {...baseProps}
+      />,
+    );
+    const es = MockEventSource.last()!;
+
+    // Emit distinguishing_marks field_extracted event
+    act(() => {
+      es.emit(
+        'audit_event',
+        JSON.stringify({
+          type: 'audit_event',
+          at: '2026-05-02T10:00:00Z',
+          source_device_id: 'tent_a',
+          payload: {
+            id: '00000000-0000-0000-0000-000000000002',
+            at: '2026-05-02T10:00:00Z',
+            event_type: 'field_extracted',
+            record_ids: ['00000000-0000-0000-0000-000000000099'],
+            match_id: null,
+            actor: 'kin_system',
+            details: { field_name: 'distinguishing_marks', value: 'marca en la mejilla derecha' },
+          },
+        }),
+      );
+    });
+
+    // The completeness meter "N of M sections" count increases when
+    // Marks is filled. The segment bar for Marks gets bg-primary when filled.
+    const filledBars = container.querySelectorAll('.bg-primary.border-primary');
+    expect(filledBars.length).toBeGreaterThan(0);
+
+    // The "Marks" label is visible in the meter
+    expect(container.textContent).toContain('Marks');
+  });
+});

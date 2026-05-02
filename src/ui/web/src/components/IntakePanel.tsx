@@ -12,6 +12,8 @@ import { useEffect, useRef, useState } from 'react';
 import { CompletenessMeter, Chip } from './primitives';
 import { RecordCard } from './RecordCard';
 import { StructlogSidebar } from './StructlogSidebar';
+import { ToolCallsSidebar } from './ToolCallsSidebar';
+import { deriveToolCalls } from '../state/toolCalls';
 import { IconLock } from './icons';
 import { useEventStream, type EventSourceFactory } from '../hooks/useEventStream';
 import { useMicCapture } from '../hooks/useMicCapture';
@@ -133,7 +135,7 @@ export function IntakePanel({
     {
       key: 'marks',
       label: 'Marks',
-      filled: !!(record.physicalDesc && record.features),
+      filled: !!record.physicalDesc,
     },
     ...(minor
       ? [{ key: 'guard', label: 'Guardian/CP', filled: !!guardianFilled }]
@@ -218,9 +220,14 @@ export function IntakePanel({
         </span>
       </div>
 
-      {/* Per-panel structlog sidebar — credibility surface */}
+      {/* Per-panel structlog sidebar — system event log */}
       <div className="mt-4">
         <StructlogSidebar events={state.structlogEvents} />
+      </div>
+
+      {/* Per-panel tool-calls sidebar — LLM function-call observability */}
+      <div className="mt-4">
+        <ToolCallsSidebar calls={deriveToolCalls(state.structlogEvents)} />
       </div>
     </div>
   );

@@ -248,6 +248,7 @@ class OllamaAdapter:
             **base,
             latency_s=latency_s,
             tool_name=result.name,
+            tool_args=result.arguments,
             eval_count=getattr(response, "eval_count", None),
             done_reason=getattr(response, "done_reason", None),
             prompt_eval_count=getattr(response, "prompt_eval_count", None),
