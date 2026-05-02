@@ -79,6 +79,12 @@ body {
   animation: kin-badge-tick 150ms ease-out 1 both;
 }
 
+@keyframes kin-flash-highlight {
+  0%   { background-color: oklch(0.97 0.025 200); }
+  100% { background-color: transparent; }
+}
+.kin-flash-highlight { animation: kin-flash-highlight 2200ms ease-out 1 both; }
+
 @media (prefers-reduced-motion: reduce) {
   .kin-rise,
   .kin-link-draw,
@@ -86,7 +92,13 @@ body {
   .kin-populate,
   .kin-slide-in-right,
   .kin-wave-bar,
-  .kin-badge-tick {
+  .kin-badge-tick,
+  .kin-flash-highlight {
     animation: none !important;
+  }
+  /* Preserve auditability semantics: static tint replaces animation
+     so merge-flash events remain legible when motion is disabled. */
+  .kin-flash-highlight {
+    background-color: oklch(0.97 0.025 200) !important;
   }
 }

@@ -6,6 +6,7 @@
    DO NOT CHANGE: plain mono JSON — no syntax highlighting library. */
 import { useEffect, useRef } from 'react';
 import type { ToolCall } from '../state/toolCalls';
+import { isMergeFlashEvent } from '../lib/mergeFlash';
 
 // ---- JSON renderers (plain mono, token-role color only) -----------------
 
@@ -77,7 +78,7 @@ function ToolCallRow({ call, isLatest }: ToolCallRowProps) {
   const started = call.status === 'started';
   return (
     <div
-      className={`px-4 py-3 border-b border-hair ${LEFT_RULE[call.status]} ${isLatest && !started ? 'kin-populate' : ''}`}
+      className={`px-4 py-3 border-b border-hair ${LEFT_RULE[call.status]} ${isLatest && !started ? 'kin-populate' : ''} ${isMergeFlashEvent(call.name) ? 'kin-flash-highlight' : ''}`}
     >
       <div className="flex items-baseline gap-2">
         <span
