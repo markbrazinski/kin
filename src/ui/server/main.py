@@ -109,6 +109,8 @@ def app_factory(storage_dir: Path | None = None) -> FastAPI:
     app.state.storage_dir = resolved_dir
     app.include_router(health.router)
     app.include_router(intake.router)
+    from ui.server.routes import records
+    app.include_router(records.router)
 
     # QA injection endpoint — only when KIN_QA_MODE=1. Used by Bundle 1
     # S4 manual smoke (QA-1). Off in production / default test runs.

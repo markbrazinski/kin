@@ -113,34 +113,24 @@ describe('App — Beat 6 match candidate badge (S5)', () => {
     expect(queryByText('Reunification candidate')).toBeNull();
   });
 
-  it('match_proposed updates the queue rail badge via getActiveMatchCount', () => {
-    /* Bundle 1.5 S5: the new candidate-count flow drives the queue
-       rail badge. record_ids[0] is the new-record key per the
-       ordering convention; candidate_count > 0 contributes to
-       getActiveMatchCount. */
-    const { rerender, container } = render(<App />);
+  it('S7: queue rail badge is driven by queue records count, not match candidates', () => {
+    /* S7 changed the rail badge source from activeMatchCount (S5) to
+       queueRecords.length (real records from GET /intake/records). The
+       badge no longer responds to match_proposed SSE events. */
+    const { rerender } = render(<App />);
 
-    // Initial: badge is hidden (no active candidates).
-    const queueBeforeBtn = screen.getByLabelText('Queue');
-    expect(queueBeforeBtn.querySelector('span.bg-primary.text-white')).toBeNull();
+    // Initial: badge is hidden (no queue records fetched yet — GET not mocked).
+    const queueBtn = screen.getByLabelText('Queue');
+    expect(queueBtn.querySelector('span.bg-primary.text-white')).toBeNull();
 
-    // match_proposed arrives with 1 candidate for intake "rec-a".
+    // match_proposed arrives — badge should NOT change (S7 architectural change).
     mockAuditEvents = [
-      makeMatchProposedEvent('e-1', {
-        candidateCount: 1,
-        recordIds: ['rec-a', 'rec-b'],
-      }),
+      makeMatchProposedEvent('e-1', { candidateCount: 1, recordIds: ['rec-a', 'rec-b'] }),
     ];
     rerender(<App />);
-
-    // Badge now visible on the Queue button (RailNav renders a span
-    // with bg-primary + text-white when queuedCount is truthy).
-    const queueAfterBtn = screen.getByLabelText('Queue');
-    const badge = queueAfterBtn.querySelector('span.bg-primary.text-white');
-    expect(badge).not.toBeNull();
-    expect(badge?.textContent).toBe('1');
-
-    void container;
+    const badgeAfterMatch = screen.getByLabelText('Queue').querySelector('span.bg-primary.text-white');
+    // Badge stays null — queue records count is 0, match candidates no longer drive it
+    expect(badgeAfterMatch).toBeNull();
   });
 });
 
@@ -177,6 +167,24 @@ describe('App — S6 worker/speaker language separation', () => {
       const btn = screen.queryByRole('button', { name: code });
       expect(btn).not.toBeNull();
     }
+  });
+});
+
+describe('App — S7 TopBar queued Chip removed', () => {
+  it('Test 7 — TopBar does not render the "records queued locally" chip', () => {
+    /* S7 removed the hardcoded queued={3} Chip from TopBar. The rail badge
+       (RailNav queuedCount) is the canonical queue-count surface. */
+    render(<App />);
+    expect(screen.queryByText(/records queued locally/)).toBeNull();
+  });
+});
+
+describe('App — S7 DemoDock hidden by default', () => {
+  it('Test 6 — DemoDock is hidden by default (no ?dev param); does not render "Demo controls"', () => {
+    /* S7 changed demoDockVisible initial state from true to URL-param-derived.
+       Without ?dev=1, DemoDock starts hidden. */
+    render(<App />);
+    expect(screen.queryByText('Demo controls')).toBeNull();
   });
 });
 

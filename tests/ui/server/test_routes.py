@@ -108,3 +108,36 @@ def test_upload_audio_response_shape_crisis_and_non_crisis(
     assert body2["status"] == "complete"
     assert body2["intake_id"] == str(happy_record.id)
     assert body2["locale_aware_message"] is None
+
+
+def test_get_intake_records_returns_record_list(
+    tmp_path: Path,
+) -> None:
+    """GET /intake/records returns 200 + {records: [...]} shape.
+
+    Uses a real StorageAdapter against tmp_path so the endpoint reads
+    actual persisted records rather than a mock.
+    """
+    from integration.storage_adapter import StorageAdapter
+    from tests.fakes.fake_clock import FakeClock
+
+    storage = StorageAdapter(tmp_path / "storage", FakeClock())
+    record = storage.create_intake_record(
+        language="es",
+        source_device_id="tent_a",
+    )
+
+    app_under_test = app_factory(tmp_path)
+    app_under_test.state.whisper = object()
+    app_under_test.state.ollama = object()
+    app_under_test.state.storage = storage
+
+    client = TestClient(app_under_test)
+    r = client.get("/intake/records")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "records" in body
+    assert isinstance(body["records"], list)
+    assert len(body["records"]) == 1
+    assert body["records"][0]["id"] == str(record.id)
+    assert body["records"][0]["status"] == "partial"

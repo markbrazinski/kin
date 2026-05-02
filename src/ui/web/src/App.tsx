@@ -22,6 +22,11 @@ import { useMicCapture } from './hooks/useMicCapture';
 import { useVoicePhase, type PostStatus } from './hooks/useVoicePhase';
 import { IntakePanel } from './components/IntakePanel';
 import { RailNav, type RailRoute } from './components/RailNav';
+import { QueueView, useQueueRecords } from './components/QueueView';
+import { RecordReadonly } from './components/RecordReadonly';
+import { PresenterHUD } from './components/PresenterHUD';
+import { usePresentationMode } from './hooks/usePresentationMode';
+import type { IntakeRecord } from './lib/intakeRecord';
 import {
   INITIAL_MATCH_CANDIDATES,
   applyMatchProposed,
@@ -85,12 +90,11 @@ type TopBarProps = {
   sessionLabel: string;
   statusLabel: string;
   statusTone: StatusTone;
-  queued: number;
   speakerLanguage: Language;
   setSpeakerLanguage: Dispatch<SetStateAction<Language>>;
 };
 
-function TopBar({ sessionLabel, statusLabel, statusTone, queued, speakerLanguage, setSpeakerLanguage }: TopBarProps) {
+function TopBar({ sessionLabel, statusLabel, statusTone, speakerLanguage, setSpeakerLanguage }: TopBarProps) {
   return (
     <header className="sticky top-0 z-20 bg-paper/95 backdrop-blur border-b border-line">
       <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-6">
@@ -116,13 +120,7 @@ function TopBar({ sessionLabel, statusLabel, statusTone, queued, speakerLanguage
 
         <div className="flex-1" />
 
-        {/* Sync state — NOT an "OFFLINE" banner (Principle 4). */}
-        <div className="hidden sm:flex items-center gap-2">
-          <Chip icon={<IconLock size={12} />} tone="neutral">
-            <span className="font-medium">{queued}</span>
-            <span className="text-muted">&nbsp;records queued locally</span>
-          </Chip>
-        </div>
+        {/* Sync state indicator — queue count lives in the rail badge. */}
 
         {/* Speaker-language switcher. Drives Whisper/Gemma/safety/
             referral. Does NOT flip UI chrome — chrome is governed
@@ -433,7 +431,7 @@ function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onSplit, onClo
       <div className="flex items-center justify-between mb-2">
         <div className="text-[11px] font-medium uppercase tracking-wider text-muted">Demo controls</div>
         <div className="flex items-center gap-2">
-          <div className="text-[11px] text-muted font-mono">⌘.&nbsp;to hide</div>
+          <div className="text-[11px] text-muted font-mono">⌘⇧D&nbsp;to hide</div>
           <button
             type="button"
             onClick={onClose}
@@ -507,8 +505,14 @@ function App() {
   const workerLanguage: Language = "en";
   const [crisisOpen, setCrisisOpen]           = useState(false);
   const [crisisMessage, setCrisisMessage]     = useState<string | null>(null);
-  const [devMode, setDevMode]                 = useState(false);
-  const [demoDockVisible, setDemoDockVisible] = useState(true);
+  // S7: dev surfaces hidden by default; ?dev=1 initializes visible
+  const [devMode, setDevMode]                 = useState(
+    () => new URLSearchParams(window.location.search).has('dev'),
+  );
+  const [demoDockVisible, setDemoDockVisible] = useState(
+    () => new URLSearchParams(window.location.search).has('dev'),
+  );
+  const [selectedQueueRecordId, setSelectedQueueRecordId] = useState<string | null>(null);
   const [justPopulated, setJustPopulated]     = useState<string | null>(null);
   const [timerSec, setTimerSec]               = useState(0);
   const [timerRunning, setTimerRunning]       = useState(false);
@@ -516,6 +520,13 @@ function App() {
   const [highlightedCall, setHighlightedCall] = useState<number | null>(null);
   const demoStartRef = useRef<number | null>(null);
   const callIdRef = useRef(0);
+
+  // Queue records — fetched on view=queue mount; drives rail badge count
+  const { records: queueRecords } = useQueueRecords(view === 'queue');
+
+  // Presentation mode — ⌘⇧P or ?present=1
+  const { presentationActive, setPresentationActive, hudHidden, setHudHidden } =
+    usePresentationMode(queueRecords);
 
   // SSE hook: opens /intake/stream and dispatches incoming envelopes
   // into a reducer. record + calls below are *also* driven imperatively
@@ -626,27 +637,33 @@ function App() {
     return id;
   }, []);
 
-  // ----- Keyboard shortcuts
+  // ----- Keyboard shortcuts (single handler, explicit precedence)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (!mod) return;
-      if (e.key === "d" || e.key === "D") {
-        e.preventDefault();
-        setDevMode(v => !v);
+      // ESC — crisis > presentation > nothing
+      if (e.key === 'Escape') {
+        if (crisisOpen) { setCrisisOpen(false); setCrisisMessage(null); return; }
+        if (presentationActive) { setPresentationActive(false); return; }
         return;
       }
-      // Accept both `e.key === "."` (US layout) and `e.code === "Period"`
-      // (layouts where the modifier changes e.key). Browser's Cmd+. "Stop"
-      // default is suppressed by preventDefault.
-      if (e.key === "." || e.code === "Period") {
-        e.preventDefault();
-        setDemoDockVisible(v => !v);
+      if (!mod) return;
+      // ⌘⇧D — DemoDock toggle. Must precede ⌘D; shift+D satisfies key==='D'.
+      if (e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault(); setDemoDockVisible(v => !v); return;
+      }
+      // ⌘⇧P — presentation mode toggle
+      if (e.shiftKey && (e.key === 'P' || e.key === 'p')) {
+        e.preventDefault(); setPresentationActive(!presentationActive); return;
+      }
+      // ⌘D (no shift) — TracePanel toggle
+      if (!e.shiftKey && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault(); setDevMode(v => !v); return;
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isMac]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isMac, crisisOpen, presentationActive]);
 
   // ----- Intake timer
   useEffect(() => {
@@ -761,7 +778,6 @@ function App() {
         sessionLabel="Session #147 — Active intake"
         statusLabel={statusLabel}
         statusTone={statusTone}
-        queued={3}
         speakerLanguage={speakerLanguage}
         setSpeakerLanguage={setSpeakerLanguage}
       />
@@ -777,7 +793,7 @@ function App() {
           setRoute={(next: RailRoute) => {
             setView(next === 'queue' ? 'queue' : 'single');
           }}
-          queuedCount={activeMatchCount}
+          queuedCount={queueRecords.length}
         />
 
         {/* MAIN COLUMN */}
@@ -900,20 +916,31 @@ function App() {
               />
             )}
 
-            {view === "queue" && (
-              <div>
-                <div className="text-[12px] font-medium uppercase tracking-wider text-muted">Queue</div>
-                <h1 className="text-[24px] font-semibold text-ink mt-0.5 tracking-[-0.01em]">
-                  Recent records
-                </h1>
-                <div className="mt-4 text-[14px] text-muted">Coming in S7.</div>
-              </div>
+            {view === "queue" && !selectedQueueRecordId && (
+              <QueueView
+                records={queueRecords}
+                onOpen={(r: IntakeRecord) => setSelectedQueueRecordId(r.id)}
+                onNew={() => setView('single')}
+              />
             )}
+
+            {view === "queue" && selectedQueueRecordId && (() => {
+              const rec = queueRecords.find(r => r.id === selectedQueueRecordId);
+              if (!rec) return null;
+              return (
+                <RecordReadonly
+                  record={rec}
+                  workerLanguage={workerLanguage}
+                  onBack={() => setSelectedQueueRecordId(null)}
+                  onNew={() => { setSelectedQueueRecordId(null); setView('single'); }}
+                />
+              );
+            })()}
           </div>
         </main>
 
-        {/* DEV RAIL */}
-        {devMode && (
+        {/* DEV RAIL — hidden in presentation mode */}
+        {devMode && !presentationActive && (
           <TracePanel
             calls={calls}
             highlightId={highlightedCall}
@@ -943,22 +970,35 @@ function App() {
         />
       )}
 
-      <DemoDock
-        visible={demoDockVisible}
-        onStart={runDemo}
-        onReset={onReset}
-        onMatch={onSimulateMatch}
-        onCrisis={onSimulateCrisis}
-        onSplit={() => setView(v => (v === "split" ? "single" : "split"))}
-        onClose={() => setDemoDockVisible(false)}
-        phase={phase}
-        view={view}
-      />
-      {!demoDockVisible && (
+      {/* DemoDock + reopen pill — hidden in presentation mode */}
+      {demoDockVisible && !presentationActive && (
+        <DemoDock
+          visible={demoDockVisible}
+          onStart={runDemo}
+          onReset={onReset}
+          onMatch={onSimulateMatch}
+          onCrisis={onSimulateCrisis}
+          onSplit={() => setView(v => (v === "split" ? "single" : "split"))}
+          onClose={() => setDemoDockVisible(false)}
+          phase={phase}
+          view={view}
+        />
+      )}
+      {!demoDockVisible && !presentationActive && (
         <DemoReopenPill onOpen={() => setDemoDockVisible(true)} />
       )}
 
-      <ShortcutHint isMac={isMac} />
+      {/* ShortcutHint — hidden in presentation mode */}
+      {!presentationActive && <ShortcutHint isMac={isMac} />}
+
+      {/* PresenterHUD — below 1080p safe-area crop */}
+      <PresenterHUD
+        active={presentationActive}
+        hidden={hudHidden}
+        setHidden={setHudHidden}
+        pipelineState={streamState.connection === 'open' ? 'busy' : 'down'}
+        onReset={onReset}
+      />
     </div>
   );
 }
