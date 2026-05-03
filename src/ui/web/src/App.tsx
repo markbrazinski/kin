@@ -1,5 +1,5 @@
 /* KIN — app shell. Top bar, main layout, demo sequencer, keyboard shortcuts. */
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   IconMic, IconLock, IconLanguages, IconInfo, IconShield,
@@ -64,6 +64,28 @@ type DemoStep = {
 // ---------- Demo script ---------------------------------------------------
 // Each step mutates the record object. The sequencer runs these in order against
 // a wall clock to simulate SSE streaming into React state.
+
+// Yusuf fixture script — Arabic intake that ends in crisis escalation.
+// Mirrors DEMO_STEPS shape; crisis fires after the last populate step.
+const YUSUF_DEMO_STEPS: DemoStep[] = [
+  { at: 1000, state: "recording",  trace: { name: "audio_stream.open",  args: { lang_hint: "ar" } } },
+  { at: 3000, state: "processing", trace: { name: "asr.transcribe",      args: { chunks: 5 }, result: "stream_complete" } },
+  { at: 4200, populate: "name",    value: "مريم العمر",
+              trace: { name: "extract_name", args: { text: "…أبحث عن زوجتي مريم العمر…" }, result: "مريم العمر" } },
+  { at: 5400, populate: "relationship", value: "زوجة",
+              trace: { name: "extract_relationship", args: {}, result: "spouse" } },
+  { at: 6400, populate: "age",     value: "28",
+              trace: { name: "extract_age", args: {}, result: 28 } },
+  { at: 7200, populate: "lastSeenLocation", value: "Syria–Lebanon border",
+              lastSeenLocationSource: "الحدود السورية اللبنانية",
+              trace: { name: "extract_location", args: {}, result: "SY–LB border" } },
+  { at: 8000, populate: "lastSeenDate", value: "3 days ago",
+              trace: { name: "normalize_date", args: { input: "قبل ثلاثة أيام" }, result: "-3d" } },
+  { at: 8800, populate: "circumstance", value: "Separated at border crossing during crowd movement",
+              trace: { name: "extract_circumstance", args: {} } },
+  // After this last step the sequencer fires escalate_crisis (see runYusufDemo)
+];
+
 const DEMO_STEPS: DemoStep[] = [
   { at: 1000, state: "recording",  trace: { name: "audio_stream.open",        args: { lang_hint: "es" } } },
   { at: 3000, state: "processing", trace: { name: "asr.transcribe",            args: { chunks: 4 }, result: "stream_complete" } },
@@ -425,22 +447,13 @@ type DemoDockProps = {
   onClose: () => void;
   phase: Phase;
   view: View;
-  onSeedFixture: (name: string) => Promise<void>;
+  onRunYusufDemo: () => void;
 };
 
-function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis, onSplit, onClose, phase, view, onSeedFixture }: DemoDockProps) {
-  const [seeding, setSeeding] = React.useState<string | null>(null);
-
+function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis, onSplit, onClose, phase, view, onRunYusufDemo }: DemoDockProps) {
   if (!visible) return null;
 
-  async function handleSeed(name: string) {
-    setSeeding(name);
-    try {
-      await onSeedFixture(name);
-    } finally {
-      setSeeding(null);
-    }
-  }
+  const demoReady = phase === "ready" && view === "single";
 
   return (
     <div className="fixed bottom-3 left-3 z-30 bg-card border border-line rounded-kin-lg shadow-elevated px-3 py-2.5 w-[min(440px,calc(100%-24px))]">
@@ -461,7 +474,7 @@ function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis
       </div>
       <div className="flex flex-wrap gap-1.5">
         <Button size="sm" variant="primary" icon={<IconPlay size={14} />}
-                onClick={onStart} disabled={phase !== "ready" || view !== "single"}>
+                onClick={onStart} disabled={!demoReady}>
           Start demo
         </Button>
         <Button size="sm" variant="secondary" icon={<IconLink size={14} />}
@@ -485,25 +498,17 @@ function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis
           Reset
         </Button>
       </div>
-      {/* Fixtures section — recording-day fallback buttons */}
+      {/* Fixtures — recording-day fallback: runs Yusuf Arabic intake then fires crisis */}
       <div className="mt-2.5 pt-2 border-t border-hair">
         <div className="text-[10px] font-medium uppercase tracking-wider text-muted/60 mb-1.5">Fixtures</div>
         <div className="flex flex-wrap gap-1.5">
           <Button
             size="sm"
             variant="ghost"
-            disabled={seeding !== null}
-            onClick={() => handleSeed('yusuf')}
+            disabled={!demoReady}
+            onClick={onRunYusufDemo}
           >
-            {seeding === 'yusuf' ? 'Loading…' : 'Load Yusuf fixture'}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={seeding !== null}
-            onClick={() => handleSeed('mariam')}
-          >
-            {seeding === 'mariam' ? 'Loading…' : 'Load Mariam fixture'}
+            Run Yusuf intake
           </Button>
         </div>
       </div>
@@ -802,6 +807,54 @@ function App() {
     resetStream();
   };
 
+  const runYusufDemo = () => {
+    demoStartRef.current = performance.now();
+    setPhase("recording");
+    setTimerRunning(true);
+    setSpeakerLanguage("ar");
+    logCall({ name: "session.start", args: { session_id: 42 }, result: "ok" }, 0);
+
+    YUSUF_DEMO_STEPS.forEach((step) => {
+      setTimeout(() => {
+        const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
+        if (step.state) setPhase(step.state);
+        if (step.populate) {
+          const populateKey = step.populate;
+          const value = step.value;
+          setRecord(prev => {
+            const next = { ...prev, [populateKey]: value };
+            if (step.lastSeenLocationSource) {
+              next.lastSeenLocationSource = step.lastSeenLocationSource;
+            }
+            return next;
+          });
+          setJustPopulated(populateKey);
+          setTimeout(() => setJustPopulated(j => j === populateKey ? null : j), 2500);
+        }
+        if (step.trace) logCall(step.trace, t);
+      }, step.at);
+    });
+
+    // After last field: fire crisis card. Phase stays "done" while the
+    // card is open. The crisis card's onResolved/onDeEscalated handlers
+    // call setCrisisOpen(false); we hook into that via a separate effect
+    // by setting phase to "ready" immediately — the mic won't activate
+    // until crisisOpen is also false, which the close handler ensures.
+    const lastAt = YUSUF_DEMO_STEPS[YUSUF_DEMO_STEPS.length - 1].at;
+    setTimeout(() => {
+      const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
+      logCall({ name: "escalate_crisis",
+                args: { signal: "distress_keyword", lang: "ar" },
+                result: "referral_card_elevated" }, t);
+      setCrisisOpen(true);
+      // Set ready now — crisis overlay is still visible, so the mic is
+      // not accessible. Once the caseworker dismisses the card
+      // (onResolved / onDeEscalated sets crisisOpen=false) the app is
+      // immediately live for Mariam's intake with no extra reset needed.
+      setPhase("ready");
+    }, lastAt + 600);
+  };
+
   const onSimulateMatch = () => {
     setView("match");
     setMatchPhase("split");
@@ -1054,13 +1107,7 @@ function App() {
           onClose={() => setDemoDockVisible(false)}
           phase={phase}
           view={view}
-          onSeedFixture={async (name: string) => {
-            await fetch('/demo/seed-fixture', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ fixture_name: name }),
-            });
-          }}
+          onRunYusufDemo={runYusufDemo}
         />
       )}
       {!demoDockVisible && !presentationActive && (
