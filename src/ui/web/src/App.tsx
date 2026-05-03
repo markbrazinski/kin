@@ -8,11 +8,13 @@ import {
 import { Chip, Button, Waveform, CompletenessMeter } from './components/primitives';
 import { RecordCard } from './components/RecordCard';
 import { CrisisReferralCard, TransliterationMatch } from './components/CrisisAndTranslit';
+import { NetworkMatch, DEFAULT_NETWORK_RESULT } from './components/NetworkMatch';
 import { TracePanel } from './components/DevTrace';
 import type {
   CompletenessSegment,
   Language,
   MatchPhase,
+  NetworkMatchResult,
   RecordData,
   TraceCall,
 } from './lib/types';
@@ -417,6 +419,7 @@ type DemoDockProps = {
   onStart: () => void;
   onReset: () => void;
   onMatch: () => void;
+  onNetworkMatch: () => void;
   onCrisis: () => void;
   onSplit: () => void;
   onClose: () => void;
@@ -424,7 +427,7 @@ type DemoDockProps = {
   view: View;
 };
 
-function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onSplit, onClose, phase, view }: DemoDockProps) {
+function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis, onSplit, onClose, phase, view }: DemoDockProps) {
   if (!visible) return null;
   return (
     <div className="fixed bottom-3 left-3 z-30 bg-card border border-line rounded-kin-lg shadow-elevated px-3 py-2.5 w-[min(440px,calc(100%-24px))]">
@@ -451,6 +454,10 @@ function DemoDock({ visible, onStart, onReset, onMatch, onCrisis, onSplit, onClo
         <Button size="sm" variant="secondary" icon={<IconLink size={14} />}
                 onClick={onMatch}>
           Simulate match
+        </Button>
+        <Button size="sm" variant="secondary" icon={<IconLink size={14} />}
+                onClick={onNetworkMatch}>
+          Network match
         </Button>
         <Button size="sm" variant="secondary" icon={<IconArrowRight size={14} />}
                 onClick={onSplit}>
@@ -497,6 +504,7 @@ function App() {
   const [phase, setPhase]                     = useState<Phase>("ready");
   const [view, setView]                       = useState<View>("single");
   const [matchPhase, setMatchPhase]           = useState<MatchPhase>("split");
+  const [networkMatchResult, setNetworkMatchResult] = useState<NetworkMatchResult | null>(null);
   /* Bundle 1.5 S6: speakerLanguage drives Whisper/Gemma/safety/
      referral; workerLanguage drives UI chrome. workerLanguage is a
      const in v1 (no Settings UI yet); v1.1 will lift it to useState
@@ -597,6 +605,18 @@ function App() {
         recordIds,
         env.payload.at,
       );
+      // S12: extract network_match from audit event details.
+      // Only present on match_proposed events emitted after B2-S12
+      // deployed; pre-S12 events have details={} so this is a no-op.
+      const networkRaw = env.payload.details?.network_match;
+      if (
+        networkRaw !== null &&
+        networkRaw !== undefined &&
+        typeof networkRaw === 'object' &&
+        (networkRaw as NetworkMatchResult).matched === true
+      ) {
+        setNetworkMatchResult(networkRaw as NetworkMatchResult);
+      }
     }
     if (next !== null) setMatchCandidates(next);
   }, [streamState.auditEvents, matchCandidates]);
@@ -740,6 +760,7 @@ function App() {
     setTimerRunning(false);
     setCalls([]);
     setJustPopulated(null);
+    setNetworkMatchResult(null);
     // Clear SSE reducer state too — without this, intakeId stays
     // pinned to the previous turn's record id and the next mic turn
     // POSTs as an extend (HTTP 500 on crisis-after-Reset).
@@ -763,6 +784,14 @@ function App() {
               performance.now() - t0);
       setMatchPhase("merged");
     }, 3400);
+  };
+
+  const onSimulateNetworkMatch = () => {
+    setNetworkMatchResult(DEFAULT_NETWORK_RESULT);
+    setView("match");
+    setMatchPhase("split");
+    setTimeout(() => setMatchPhase("linking"), 400);
+    setTimeout(() => setMatchPhase("merged"), 3400);
   };
 
   const onSimulateCrisis = () => {
@@ -909,11 +938,18 @@ function App() {
             )}
 
             {view === "match" && (
-              <TransliterationMatch
-                phase={matchPhase}
-                onBack={() => setView("single")}
-                workerLanguage={workerLanguage}
-              />
+              networkMatchResult && networkMatchResult.node_matches.length >= 2
+                ? <NetworkMatch
+                    phase={matchPhase}
+                    onBack={() => setView("single")}
+                    workerLanguage={workerLanguage}
+                    networkResult={networkMatchResult}
+                  />
+                : <TransliterationMatch
+                    phase={matchPhase}
+                    onBack={() => setView("single")}
+                    workerLanguage={workerLanguage}
+                  />
             )}
 
             {view === "queue" && !selectedQueueRecordId && (
@@ -977,6 +1013,7 @@ function App() {
           onStart={runDemo}
           onReset={onReset}
           onMatch={onSimulateMatch}
+          onNetworkMatch={onSimulateNetworkMatch}
           onCrisis={onSimulateCrisis}
           onSplit={() => setView(v => (v === "split" ? "single" : "split"))}
           onClose={() => setDemoDockVisible(false)}

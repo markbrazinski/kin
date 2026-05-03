@@ -66,3 +66,22 @@ export type CompletenessSegment = {
   label: ReactNode;
   filled: boolean;
 };
+
+// ----- Network match shapes (S12, mirrors src/core/matching.py) -----
+
+export type NodeMatch = {
+  role_a: 'searcher' | 'missing_person' | 'roster_member';
+  role_b: 'searcher' | 'missing_person' | 'roster_member';
+  name_a: string;
+  name_b: string;
+  roster_index_a: number | null;
+  roster_index_b: number | null;
+  phonetic_score: number;
+  composite_score: number;
+};
+
+export type NetworkMatchResult = {
+  matched: boolean;
+  node_matches: NodeMatch[];
+  primary_match: NodeMatch | null;
+};

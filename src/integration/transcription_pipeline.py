@@ -828,6 +828,11 @@ async def _trigger_matching(
                 confidence_score=conf_score,
                 match_reasoning=match_reasoning,
                 candidate_count=candidate_count,
+                details={
+                    "network_match": (
+                        network.model_dump() if network.matched else None
+                    )
+                },
             )
             created_links.append(link)
     else:

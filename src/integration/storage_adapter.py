@@ -189,6 +189,7 @@ class StorageAdapter:
         match_reasoning: dict[str, Any],
         proposed_by: str = "kin_matching_v1",
         candidate_count: int = 1,
+        details: dict[str, Any] | None = None,
     ) -> MatchLink:
         """Create + persist a proposed MatchLink. Emits match_proposed.
 
@@ -198,6 +199,10 @@ class StorageAdapter:
         stay valid. Pipeline callers pass the run-level total so the
         frontend matchCandidates state can derive the queue rail
         badge value without re-counting events.
+
+        details (B2-S12): optional payload forwarded to the
+        match_proposed audit event, surfacing data (e.g. network_match)
+        over SSE. Defaults to {} so existing callers stay valid.
         """
         link = MatchLink(
             id=uuid4(),
@@ -216,6 +221,7 @@ class StorageAdapter:
             record_ids=[record_a_id, record_b_id],
             match_id=link.id,
             candidate_count=candidate_count,
+            details=details or {},
         )
         return link
 
