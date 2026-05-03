@@ -1,4 +1,6 @@
-# CLAUDE.md — KIN Development Guide
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 > **Every Claude Code session must read this file before writing code.**
 > If a request conflicts with anything in this file, STOP and flag the
@@ -124,9 +126,13 @@ Do NOT assume the demo machine has headroom for:
 ┌─────────────────▼────────────────────────────────────────────┐
 │  CORE LAYER (pure logic, no I/O)                             │
 │  - rfl_schema.py      → RFL field definitions + validators   │
+│  - storage_schemas.py → IntakeRecord, MatchLink, AuditEvent  │
+│  - matching.py        → phonetic-gated record matching       │
 │  - safety_rules.py    → trauma-informed refusals + escalation│
 │  - scoring.py         → confidence scoring for tool calls    │
 │  - language_matrix.py → which languages are supported        │
+│  - clock.py           → Clock protocol for DI + testing      │
+│  - tool_calling.py    → ToolCallResult type                  │
 │  - FULLY TESTABLE with no network, no model, no files        │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -392,11 +398,28 @@ with fewer, that's fine; if they need more, that's also fine.
 2. `tests/core/test_rfl_schema.py::test_minor_forces_guardian`
 3. `tests/integration/test_ollama_adapter_timeout.py::test_timeout_fires_at_25s`
 
+### Commands
+
+```bash
+# Python — always use the project venv
+.venv/bin/python -m pytest tests/core tests/integration -q -x   # fast tier
+.venv/bin/python -m pytest -q                                    # full suite
+.venv/bin/python -m pytest -m smoke                             # live-model tests (requires Ollama)
+.venv/bin/ruff check src/integration/ src/core/ tests/          # lint changed-file scope
+
+# React (from src/ui/web/)
+pnpm vitest --run        # component tests
+pnpm exec tsc --noEmit   # type check
+```
+
+Note: `mypy` is not installed in the project venv and is not a current gate. `ruff` is the active linter. Fixing mypy strict errors is a post-hackathon polish-week task.
+
+Note: `--no-cov` is not installed; omit it. Pre-existing ruff errors exist in `tests/fakes/`, `tests/ui/`, and some integration test files — scope ruff to changed files rather than `src/ tests/` to avoid noise.
+
 ### Tiered commands
-- **Pre-commit** (fast, <10s): ruff + mypy Core/Integration +
-  `pytest tests/core tests/integration -q -x --no-cov`
+- **Pre-commit** (fast, <10s): `ruff check` on changed files + `pytest tests/core tests/integration -q -x`
 - **Pre-push** (full, <30s): `pytest -q` including red-team
-- **On demand:** `pnpm vitest --run`, `pnpm exec playwright test`
+- **On demand:** `pnpm vitest --run`, `pnpm exec tsc --noEmit`, `pnpm exec playwright test`
 
 ### Fixtures (captured Day 5-7 when prompts stabilize, NOT Day 1)
 - 20+ real Gemma 4 E2B responses in `tests/fixtures/gemma/`
@@ -445,18 +468,27 @@ kin/
 ├── audio_samples/            # test audio (gitignored)
 ├── src/
 │   ├── core/                 # pure logic, no I/O
-│   │   ├── rfl_schema.py
+│   │   ├── rfl_schema.py     # RFLRecord, FamilyMember, Name, Age…
+│   │   ├── storage_schemas.py# IntakeRecord, MatchLink, AuditEvent
+│   │   ├── matching.py       # match_records + match_records_network
 │   │   ├── safety_rules.py
 │   │   ├── scoring.py
-│   │   └── language_matrix.py
+│   │   ├── language_matrix.py
+│   │   ├── clock.py          # Clock protocol for constructor DI
+│   │   └── tool_calling.py   # ToolCallResult
 │   ├── integration/          # adapters only
 │   │   ├── ollama_adapter.py # owns padding + timeout + logging
+│   │   ├── transcription_pipeline.py  # ingest_audio orchestrator
+│   │   ├── extraction_tools.py        # EXTRACT_INTAKE_FIELDS_TOOL
 │   │   ├── storage_adapter.py
 │   │   └── sync_adapter.py
 │   └── ui/
 │       ├── terminal_demo.py
 │       ├── caseworker_review.py
-│       ├── server.py         # FastAPI, 127.0.0.1 only
+│       ├── server/           # FastAPI package, 127.0.0.1 only
+│       │   ├── main.py
+│       │   ├── sse.py
+│       │   └── routes/
 │       └── web/              # React + Tailwind + shadcn/ui
 │           ├── src/
 │           ├── public/
@@ -511,7 +543,7 @@ kin/
 - Show file trees and primary files BEFORE running anything.
 - Never execute benchmarks yourself — those are run by the human.
 - Flag new dependencies for approval.
-- Commit message format: `phase-N: <what>` e.g. `phase-4: ollama adapter`.
+- Commit message format: `bundle2-SN: <what>` (current) or `bundle1-5-SN: <what>` (Bundle 1.5 sessions). `phase-N:` is deprecated — do not use for new commits.
 
 ## Git & version control conventions
 - Local-only git during build. Commit freely during work sessions.
@@ -529,4 +561,4 @@ kin/
 
 ---
 
-**Last updated:** April 23, 2026 (PM) — web UI ADR ratified
+**Last updated:** May 3, 2026 — commands block, Core file list, commit prefix, server package path corrected
