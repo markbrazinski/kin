@@ -37,6 +37,7 @@ from core import safety_rules
 from core.matching import MatchResult, match_records
 from core.rfl_schema import (
     Age,
+    FamilyMember,
     Guardian,
     LastSeen,
     Name,
@@ -53,6 +54,7 @@ from integration.escalate_crisis_tool import (
 from integration.extraction_tools import (
     EXTRACT_INTAKE_FIELDS_TOOL,
     ExtractIntakeFieldsArgs,
+    FamilyMemberArg,
 )
 from integration.storage_adapter import StorageAdapter
 
@@ -116,6 +118,18 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "person, call extract_intake_fields with the fields the user "
     "stated. Do not invent fields the user did not state — pass null "
     "for unknown values."
+    "\n\n"
+    "If the speaker identifies themselves by name, populate "
+    "searcher_name in the source script. If they state their "
+    "relationship to the missing person, populate "
+    "searcher_relationship_to_target."
+    "\n\n"
+    "If the speaker mentions additional family members (siblings, "
+    "children, parents) beyond the primary missing-person target, "
+    "populate family_members with one object per person. Each object "
+    "requires name and relationship_to_searcher. Emit null for "
+    "family_members (not an empty array) when no additional members "
+    "are mentioned in this utterance."
 )
 
 _CRISIS_SYSTEM_PROMPT = (
@@ -338,7 +352,7 @@ async def ingest_audio(
     if intake_id is not None:
         intake_fields = {
             k: v for k, v in intake_fields.items()
-            if v is not None and v != ""
+            if v is not None and v != "" and v != []
         }
 
     record = storage.update_intake_record(record.id, **intake_fields)
@@ -511,6 +525,37 @@ def _build_extraction_messages(text: str) -> list[dict[str, Any]]:
     ]
 
 
+_VALID_MEMBER_STATUSES: frozenset[str] = frozenset({"missing", "known", "present"})
+
+
+def _map_family_members(
+    members: list[FamilyMemberArg] | None,
+) -> list[FamilyMember]:
+    """Convert extraction-layer FamilyMemberArg list to Core FamilyMember list.
+
+    None or empty input → empty list (Gemma returned null; no roster in
+    this utterance). Status values outside the Literal set default to
+    'missing' so a model hallucinating an invalid status string doesn't
+    crash validation.
+    """
+    if not members:
+        return []
+    result: list[FamilyMember] = []
+    for m in members:
+        status = m.status if m.status in _VALID_MEMBER_STATUSES else "missing"
+        result.append(
+            FamilyMember(
+                name=m.name,
+                name_transliteration=m.name_transliteration,
+                relationship_to_searcher=m.relationship_to_searcher,
+                status=status,  # type: ignore[arg-type]
+                age=m.age,
+                last_seen_location=m.last_seen_location,
+            )
+        )
+    return result
+
+
 def _map_extraction_to_intake(
     args: ExtractIntakeFieldsArgs,
     lang: str,
@@ -554,6 +599,20 @@ def _map_extraction_to_intake(
         # tool's idiom is `distinguishing_features`. Names diverge
         # historically but mean the same thing.
         "distinguishing_marks": args.distinguishing_features,
+        "searcher_name": (
+            args.searcher_name if args.searcher_name is not None else ""
+        ),
+        "searcher_name_transliteration": (
+            args.searcher_name_transliteration
+            if args.searcher_name_transliteration is not None
+            else ""
+        ),
+        "searcher_relationship_to_target": (
+            args.searcher_relationship_to_target
+            if args.searcher_relationship_to_target is not None
+            else ""
+        ),
+        "family_roster": _map_family_members(args.family_members),
     }
 
 
@@ -658,6 +717,14 @@ def _to_rfl_record(intake: IntakeRecord) -> RFLRecord:
         last_seen=last_seen,
         guardian=Guardian(present=False, consent=False),
         distinguishing_marks=marks,
+        family_roster=intake.family_roster,
+        searcher_name=intake.searcher_name or None,
+        searcher_name_transliteration=(
+            intake.searcher_name_transliteration or None
+        ),
+        searcher_relationship_to_target=(
+            intake.searcher_relationship_to_target or None
+        ),
     )
 
 
