@@ -16,8 +16,9 @@ from core.matching import (
     GATE_THRESHOLD,
     MatchResult,
     match_records,
+    match_records_network,
 )
-from core.rfl_schema import Age, LastSeen, Name, RFLRecord
+from core.rfl_schema import Age, FamilyMember, LastSeen, Name, RFLRecord
 
 
 def _record(
@@ -212,3 +213,198 @@ def test_match_module_does_not_import_llm_clients() -> None:
         assert phrase not in source, (
             f"matching.py must not import LLM clients: {phrase!r}"
         )
+
+
+# ─── B2-S11: cross-role network match tests ───────────────────────
+
+
+def _network_record(
+    name: Name | None = None,
+    age: Age | None = None,
+    last_seen: LastSeen | None = None,
+    searcher_name: str | None = None,
+    searcher_name_transliteration: str | None = None,
+    roster: list[FamilyMember] | None = None,
+) -> RFLRecord:
+    return RFLRecord(
+        name=name,
+        age=age,
+        last_seen=last_seen,
+        distinguishing_marks=[],
+        searcher_name=searcher_name,
+        searcher_name_transliteration=searcher_name_transliteration,
+        family_roster=roster or [],
+    )
+
+
+def test_network_match_searcher_to_missing_person() -> None:
+    """searcher(a)=Yusuf ↔ missing_person(b)=Yusuf — single boundary.
+    Fires via SAME_SCRIPT_EXACT_FLOOR=0.85; no age on the searcher slot.
+    """
+    a = _network_record(
+        name=Name(canonical="Ahmad", source_script="latin"),
+        searcher_name="Yusuf",
+    )
+    b = _network_record(
+        name=Name(canonical="Yusuf", source_script="latin"),
+        age=Age(value=35, confidence="exact"),
+    )
+    result = match_records_network(a, b)
+    assert result.matched is True
+    assert result.primary_match is not None
+    assert result.primary_match.role_a == "searcher"
+    assert result.primary_match.role_b == "missing_person"
+    assert result.primary_match.roster_index_a is None
+    assert result.primary_match.roster_index_b is None
+
+
+def test_network_match_roster_to_missing_person() -> None:
+    """roster_member(a)[0]=Mariam ↔ missing_person(b)=Mariam.
+    Sparse roster member (name only); fires via SAME_SCRIPT_EXACT_FLOOR.
+    """
+    a = _network_record(
+        name=Name(canonical="Yusuf", source_script="latin"),
+        roster=[
+            FamilyMember(
+                name="Mariam", relationship_to_searcher="sister", status="missing"
+            ),
+        ],
+    )
+    b = _network_record(name=Name(canonical="Mariam", source_script="latin"))
+    result = match_records_network(a, b)
+    assert result.matched is True
+    assert result.primary_match is not None
+    assert result.primary_match.role_a == "roster_member"
+    assert result.primary_match.role_b == "missing_person"
+    assert result.primary_match.roster_index_a == 0
+    assert result.primary_match.roster_index_b is None
+
+
+def test_network_match_roster_to_roster() -> None:
+    """roster_member(a)[0]=محمد (age 8) ↔ roster_member(b)[0]=محمد (age 8).
+    Age corroborates; composite = max(0.40, 0.85) = 0.85 via floor.
+    """
+    a = _network_record(
+        name=Name(canonical="يوسف", source_script="arabic"),
+        roster=[
+            FamilyMember(
+                name="محمد", relationship_to_searcher="nephew", age=8, status="missing"
+            ),
+        ],
+    )
+    b = _network_record(
+        name=Name(canonical="مريم", source_script="arabic"),
+        roster=[
+            FamilyMember(
+                name="محمد", relationship_to_searcher="son", age=8, status="missing"
+            ),
+        ],
+    )
+    result = match_records_network(a, b)
+    assert result.matched is True
+    assert result.primary_match is not None
+    assert result.primary_match.role_a == "roster_member"
+    assert result.primary_match.role_b == "roster_member"
+    assert result.primary_match.roster_index_a == 0
+    assert result.primary_match.roster_index_b == 0
+
+
+def test_network_match_full_yusuf_mariam_mohamad() -> None:
+    """The demo case. Three cross-role pairs must all fire:
+      searcher(A)=يوسف ↔ missing_person(B)=يوسف  — floor, no age
+      missing_person(A)=محمد ↔ roster(B)[0]=محمد   — floor, age 8
+      roster(A)[0]=مريم ↔ searcher(B)=مريم          — floor, no age
+    All three reach composite=0.85 via SAME_SCRIPT_EXACT_FLOOR.
+    """
+    record_a = _network_record(
+        name=Name(
+            canonical="محمد", source_script="arabic", transliterations=["Mohamad"]
+        ),
+        age=Age(value=8, confidence="approximate"),
+        last_seen=LastSeen(location="Aleppo"),
+        searcher_name="يوسف",
+        searcher_name_transliteration="Yusuf",
+        roster=[
+            FamilyMember(
+                name="مريم",
+                name_transliteration="Mariam",
+                relationship_to_searcher="sister",
+                status="missing",
+            ),
+        ],
+    )
+    record_b = _network_record(
+        name=Name(canonical="يوسف", source_script="arabic", transliterations=["Yusuf"]),
+        age=Age(value=35, confidence="exact"),
+        searcher_name="مريم",
+        searcher_name_transliteration="Mariam",
+        roster=[
+            FamilyMember(
+                name="محمد",
+                name_transliteration="Mohamad",
+                relationship_to_searcher="nephew",
+                age=8,
+                status="missing",
+            ),
+        ],
+    )
+    result = match_records_network(record_a, record_b)
+    assert result.matched is True
+    assert len(result.node_matches) == 3
+    roles = {(n.role_a, n.role_b) for n in result.node_matches}
+    assert ("searcher", "missing_person") in roles
+    assert ("missing_person", "roster_member") in roles
+    assert ("roster_member", "searcher") in roles
+
+
+def test_network_no_match_on_unrelated_records() -> None:
+    """Distinct families — no overlapping names across any node role."""
+    a = _network_record(
+        name=Name(canonical="Carlos", source_script="latin"),
+        searcher_name="Rosa",
+        roster=[
+            FamilyMember(
+                name="Lucia", relationship_to_searcher="sister", status="missing"
+            ),
+        ],
+    )
+    b = _network_record(
+        name=Name(canonical="Fatima", source_script="latin"),
+        searcher_name="Omar",
+        roster=[
+            FamilyMember(
+                name="Ahmad", relationship_to_searcher="brother", status="missing"
+            ),
+        ],
+    )
+    result = match_records_network(a, b)
+    assert result.matched is False
+    assert result.node_matches == []
+    assert result.primary_match is None
+
+
+def test_same_role_match_records_unchanged() -> None:
+    """Regression: match_records returns high-confidence for Mohammed/Mohamad
+    same-role Arabic case. S11 additions must not affect this function.
+    """
+    a = _record(
+        name=Name(
+            canonical="محمد", source_script="arabic", transliterations=["Mohammed"]
+        ),
+        age=Age(value=9, confidence="approximate"),
+        last_seen=LastSeen(location="Aleppo", date_text="three weeks before we left"),
+    )
+    b = _record(
+        name=Name(
+            canonical="محمد", source_script="arabic", transliterations=["Mohamad"]
+        ),
+        age=Age(value=9, confidence="approximate"),
+        last_seen=LastSeen(
+            location="Aleppo neighborhood", date_text="about three weeks ago"
+        ),
+    )
+    result = match_records(a, b)
+    assert result.is_match is True
+    assert result.phonetic_score == 1.0
+    assert result.score >= 0.7
+    assert result.confidence == "high"

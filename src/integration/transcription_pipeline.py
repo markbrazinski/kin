@@ -34,7 +34,13 @@ import structlog
 from pydantic import ValidationError
 
 from core import safety_rules
-from core.matching import MatchResult, match_records
+from core.matching import (
+    MatchResult,
+    NetworkMatchResult,
+    confidence_band_for_score,
+    match_records,
+    match_records_network,
+)
 from core.rfl_schema import (
     Age,
     FamilyMember,
@@ -769,20 +775,45 @@ async def _trigger_matching(
     # requires every match_proposed event to carry the run-level
     # candidate count so the frontend state can derive the queue
     # rail badge value without re-counting events.
-    matches: list[tuple[IntakeRecord, MatchResult]] = []
+    matches: list[tuple[IntakeRecord, MatchResult, NetworkMatchResult]] = []
     for candidate in candidates:
-        result = match_records(new_rfl, _to_rfl_record(candidate))
-        if result.is_match:
-            matches.append((candidate, result))
+        candidate_rfl = _to_rfl_record(candidate)
+        same_role = match_records(new_rfl, candidate_rfl)
+        network = match_records_network(new_rfl, candidate_rfl)
+        if same_role.is_match or network.matched:
+            matches.append((candidate, same_role, network))
 
     created_links: list[MatchLink] = []
     if matches:
         candidate_count = len(matches)
-        for candidate, result in matches:
+        for candidate, same_role, network in matches:
+            # Confidence band: same-role wins ties; cross-role provides
+            # evidence when same-role alone did not match.
+            if same_role.is_match and (
+                not network.matched
+                or same_role.score
+                >= network.primary_match.composite_score  # type: ignore[union-attr]
+            ):
+                conf_band = same_role.confidence
+                conf_score = same_role.score
+            else:
+                pm = network.primary_match
+                assert pm is not None  # network.matched=True guarantees this
+                conf_band = confidence_band_for_score(
+                    pm.phonetic_score,
+                    pm.phonetic_score == 1.0,
+                    0,
+                    pm.composite_score,
+                )
+                conf_score = pm.composite_score
+
             match_reasoning = {
-                "matched_fields": list(result.matched_fields),
-                "phonetic_score": result.phonetic_score,
-                "reason": result.reason,
+                # Existing keys preserved for backward compat:
+                "matched_fields": list(same_role.matched_fields),
+                "phonetic_score": same_role.phonetic_score,
+                "reason": same_role.reason,
+                # New key — None when only same-role fired:
+                "network_match": network.model_dump() if network.matched else None,
             }
             # ORDERING CONVENTION (Bundle 1.5 S5): record_a_id is
             # ALWAYS the new record being matched; record_b_id is the
@@ -793,8 +824,8 @@ async def _trigger_matching(
             link = storage.create_match_link(
                 record_a_id=new_record.id,
                 record_b_id=candidate.id,
-                confidence_band=result.confidence,
-                confidence_score=result.score,
+                confidence_band=conf_band,
+                confidence_score=conf_score,
                 match_reasoning=match_reasoning,
                 candidate_count=candidate_count,
             )
