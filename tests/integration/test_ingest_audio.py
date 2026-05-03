@@ -613,3 +613,68 @@ async def test_ingest_audio_crisis_extend_still_raises_value_error(
 
     # No Gemma tool_call invoked on the crisis-extend attempt.
     assert crisis_ollama.tool_call_calls == []
+
+
+# ─── S15a: source_utterance + whisper_translation in field_extracted ─
+
+
+@pytest.mark.asyncio
+async def test_field_extracted_events_carry_source_utterance(
+    tmp_path: Path,
+) -> None:
+    """S15a: field_extracted audit events emitted by ingest_audio must
+    include source_utterance (Whisper source-language text) and
+    whisper_translation (Whisper/Gemma English text) in their details.
+
+    These fields power the audit panel's "Source Arabic / Whisper
+    translation / Gemma extraction" sub-block labels.
+    """
+    storage = _adapter(tmp_path)
+    audio = _audio_path(tmp_path)
+
+    source_text = "أبحث عن ابني محمد. عمره ثماني سنوات."
+    english_text = "I am looking for my son Mohammed. He is eight years old."
+
+    whisper = _WhisperStub(text=source_text)
+    ollama = _OllamaStub(
+        english=english_text,
+        tool_call_response=ToolCallResult(
+            name="extract_intake_fields",
+            arguments={"full_name": "محمد", "relationship": "ابن", "age": 8},
+        ),
+    )
+
+    await ingest_audio(audio, "ar", "tent_a", whisper=whisper, ollama=ollama, storage=storage)
+
+    field_extracted_events = storage.list_audit_events(event_type="field_extracted")
+    assert len(field_extracted_events) >= 1
+
+    for event in field_extracted_events:
+        assert event.details.get("source_utterance") == source_text, (
+            f"field_extracted event for {event.details.get('field_name')!r} "
+            f"missing source_utterance"
+        )
+        assert event.details.get("whisper_translation") == english_text, (
+            f"field_extracted event for {event.details.get('field_name')!r} "
+            f"missing whisper_translation"
+        )
+
+
+@pytest.mark.asyncio
+async def test_status_transition_events_omit_utterance_fields(
+    tmp_path: Path,
+) -> None:
+    """Backward-compat: update_intake_record calls that don't pass
+    source_utterance/whisper_translation (e.g. status promotions,
+    crisis triple-emit) must not include those keys in event details.
+    """
+    storage = _adapter(tmp_path)
+    record = storage.create_intake_record(language="ar", source_device_id="tent_a")
+    # Status-only update — no utterance kwargs.
+    storage.update_intake_record(record.id, status="complete")
+
+    # The triple-emit events (intake_paused etc.) and any field_extracted
+    # events on the status transition must not carry utterance fields.
+    for event in storage.list_audit_events():
+        assert "source_utterance" not in event.details
+        assert "whisper_translation" not in event.details
