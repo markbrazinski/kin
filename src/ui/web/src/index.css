@@ -85,6 +85,12 @@ body {
 }
 .kin-flash-highlight { animation: kin-flash-highlight 2200ms ease-out 1 both; }
 
+@keyframes kin-panel-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+.kin-panel-slide-in { animation: kin-panel-slide-in 180ms ease-out; }
+
 @media (prefers-reduced-motion: reduce) {
   .kin-rise,
   .kin-link-draw,
@@ -93,7 +99,8 @@ body {
   .kin-slide-in-right,
   .kin-wave-bar,
   .kin-badge-tick,
-  .kin-flash-highlight {
+  .kin-flash-highlight,
+  .kin-panel-slide-in {
     animation: none !important;
   }
   /* Preserve auditability semantics: static tint replaces animation

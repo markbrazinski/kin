@@ -16,6 +16,7 @@ import { Button, Chip } from './primitives';
 import { IconArrowRight, IconCheck, IconLink } from './icons';
 import type { Language, MatchPhase, NetworkMatchResult, NodeMatch } from '../lib/types';
 import { dirFor } from '../lib/i18n';
+import { MatchAuditPanel } from './MatchAuditPanel';
 
 // ─── Internal types ─────────────────────────────────────────────────
 
@@ -48,6 +49,8 @@ export type NetworkMatchProps = {
   networkResult: NetworkMatchResult;
   recordA?: NetworkCardData;
   recordB?: NetworkCardData;
+  intakeIdA?: string;
+  intakeIdB?: string;
 };
 
 type LineCoords = { x1: number; y1: number; x2: number; y2: number };
@@ -297,6 +300,8 @@ export function NetworkMatch({
   networkResult,
   recordA,
   recordB,
+  intakeIdA,
+  intakeIdB,
 }: NetworkMatchProps) {
   // Parent (App.tsx) applies the richness-based priority rule before
   // rendering this component. Guard here is minimal: only gates on
@@ -313,6 +318,7 @@ export function NetworkMatch({
     new Map(),
   );
   const [lines, setLines] = useState<LineCoords[]>([]);
+  const [auditPanelOpen, setAuditPanelOpen] = useState(false);
 
   const reducedMotion =
     typeof window !== 'undefined'
@@ -356,8 +362,11 @@ export function NetworkMatch({
     };
   }, [showLines, networkResult.node_matches]);
 
+  // Audit panel needs the speaker language from one of the cards.
+  const panelSpeakerLang = rA.speakerLanguage;
+
   return (
-    <div className="max-w-[960px] mx-auto w-full">
+    <div className="max-w-[1280px] mx-auto w-full">
 
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
@@ -369,115 +378,156 @@ export function NetworkMatch({
             Network match — {networkResult.node_matches.length} linked identities
           </div>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={<IconArrowRight className="rotate-180" size={16} />}
-          onClick={onBack}
-        >
-          Back to intake
-        </Button>
+        <div className="flex items-center gap-2">
+          {merged && intakeIdA && intakeIdB && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setAuditPanelOpen(v => !v)}
+              aria-expanded={auditPanelOpen}
+              aria-controls="match-audit-panel"
+            >
+              {auditPanelOpen ? 'Hide audit trail' : 'Show audit trail'}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<IconArrowRight className="rotate-180" size={16} />}
+            onClick={onBack}
+          >
+            Back to intake
+          </Button>
+        </div>
       </div>
 
-      {/* Card pair + SVG overlay */}
-      <div ref={containerRef} className={`relative ${merged ? 'kin-merge-pulse' : ''}`}>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <NetworkCard data={rA} side="a" ensureRef={ensureRef} />
-          <NetworkCard data={rB} side="b" ensureRef={ensureRef} />
+      {/* Main content — 60/40 split when audit panel is open */}
+      <div className={`flex gap-4 ${auditPanelOpen ? 'items-start' : ''}`}>
+
+        {/* Left: card pair + confirmation banner */}
+        <div className={auditPanelOpen ? 'flex-[3] min-w-0' : 'flex-1'}>
+
+          {/* Card pair + SVG overlay */}
+          <div ref={containerRef} className={`relative ${merged ? 'kin-merge-pulse' : ''}`}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <NetworkCard data={rA} side="a" ensureRef={ensureRef} />
+              <NetworkCard data={rB} side="b" ensureRef={ensureRef} />
+            </div>
+
+            {showLines && lines.length > 0 && (
+              <svg
+                aria-hidden="true"
+                className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
+              >
+                {lines.map((coords, i) => {
+                  const isPrimary = i === 0;
+                  const animDelay = reducedMotion
+                    ? undefined
+                    : `${i === 0 ? 0 : 400 + (i - 1) * 300}ms`;
+                  return (
+                    <line
+                      key={i}
+                      x1={coords.x1}
+                      y1={coords.y1}
+                      x2={coords.x2}
+                      y2={coords.y2}
+                      stroke={
+                        isPrimary
+                          ? 'oklch(0.55 0.11 155)'
+                          : 'oklch(0.55 0.11 155 / 0.45)'
+                      }
+                      strokeWidth={isPrimary ? 2 : 1}
+                      strokeDasharray={isPrimary ? undefined : '4 3'}
+                      className={reducedMotion ? undefined : 'kin-link-draw'}
+                      style={
+                        animDelay !== undefined ? { animationDelay: animDelay } : undefined
+                      }
+                    />
+                  );
+                })}
+              </svg>
+            )}
+          </div>
+
+          {/* Merged confirmation banner — cards stay visible above */}
+          {merged && (
+            <div className="mt-5 bg-card border border-green/40 rounded-kin-lg">
+              <div className="px-6 py-4 border-b border-hair bg-green-soft/60 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-kin bg-white border border-green/40 text-green flex items-center justify-center">
+                  <IconLink size={16} />
+                </div>
+                <div>
+                  <div className="text-[12px] font-medium uppercase tracking-wider text-[oklch(0.38_0.1_155)]">
+                    Network match confirmed
+                  </div>
+                  <div className="text-[15px] text-ink mt-0.5">
+                    {networkResult.node_matches.length} identity links across both records.
+                  </div>
+                </div>
+                <div className="ml-auto">
+                  <Chip icon={<IconCheck size={12} />} tone="green">
+                    Pending caseworker review
+                  </Chip>
+                </div>
+              </div>
+
+              <div className="px-6 py-5">
+                <div className="text-[12px] font-medium uppercase tracking-wider text-muted mb-1">
+                  Matched name pairs
+                </div>
+                {/* Threshold chrome — contexualizes scores for judges */}
+                <p className="text-[11px] text-muted/70 mb-3" data-testid="threshold-label">
+                  Threshold: 0.80 — below this, caseworker decides
+                </p>
+                <div className="space-y-2">
+                  {networkResult.node_matches.map((nm, i) => (
+                    <div key={i} className="flex items-center gap-3 text-[14px]">
+                      <span className="text-ink font-medium">{nm.name_a}</span>
+                      <span className="text-muted text-[12px]">
+                        {nm.role_a} → {nm.role_b}
+                      </span>
+                      <span className="text-ink font-medium">{nm.name_b}</span>
+                      <span className="ml-auto text-muted text-[12px] font-mono">
+                        {Math.round(nm.composite_score * 100)}%
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Cosmetic CTA buttons — onClick absent per S8 Item 11 pattern.
+                  Parent match view owns confirm/reject; this component is
+                  visualization only. */}
+              <div
+                dir={dirFor(wl)}
+                className="border-t border-hair bg-subtle/40 px-6 py-3 flex flex-col sm:flex-row gap-2 sm:justify-end"
+              >
+                <Button variant="ghost">Escalate to supervisor</Button>
+                <Button variant="secondary">Reject</Button>
+                <Button variant="confirm" icon={<IconCheck size={16} />}>
+                  Confirm match
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
-        {showLines && lines.length > 0 && (
-          <svg
-            aria-hidden="true"
-            className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
+        {/* Right: audit panel (40%) */}
+        {auditPanelOpen && intakeIdA && intakeIdB && (
+          <div
+            id="match-audit-panel"
+            className="flex-[2] min-w-0 min-h-[600px] rounded-kin-lg overflow-hidden border border-line"
           >
-            {lines.map((coords, i) => {
-              const isPrimary = i === 0;
-              const animDelay = reducedMotion
-                ? undefined
-                : `${i === 0 ? 0 : 400 + (i - 1) * 300}ms`;
-              return (
-                <line
-                  key={i}
-                  x1={coords.x1}
-                  y1={coords.y1}
-                  x2={coords.x2}
-                  y2={coords.y2}
-                  stroke={
-                    isPrimary
-                      ? 'oklch(0.55 0.11 155)'
-                      : 'oklch(0.55 0.11 155 / 0.45)'
-                  }
-                  strokeWidth={isPrimary ? 2 : 1}
-                  strokeDasharray={isPrimary ? undefined : '4 3'}
-                  className={reducedMotion ? undefined : 'kin-link-draw'}
-                  style={
-                    animDelay !== undefined ? { animationDelay: animDelay } : undefined
-                  }
-                />
-              );
-            })}
-          </svg>
+            <MatchAuditPanel
+              intakeIdA={intakeIdA}
+              intakeIdB={intakeIdB}
+              networkResult={networkResult}
+              speakerLanguage={panelSpeakerLang}
+              onClose={() => setAuditPanelOpen(false)}
+            />
+          </div>
         )}
       </div>
-
-      {/* Merged confirmation banner — cards stay visible above */}
-      {merged && (
-        <div className="mt-5 bg-card border border-green/40 rounded-kin-lg">
-          <div className="px-6 py-4 border-b border-hair bg-green-soft/60 flex items-center gap-3">
-            <div className="w-8 h-8 rounded-kin bg-white border border-green/40 text-green flex items-center justify-center">
-              <IconLink size={16} />
-            </div>
-            <div>
-              <div className="text-[12px] font-medium uppercase tracking-wider text-[oklch(0.38_0.1_155)]">
-                Network match confirmed
-              </div>
-              <div className="text-[15px] text-ink mt-0.5">
-                {networkResult.node_matches.length} identity links across both records.
-              </div>
-            </div>
-            <div className="ml-auto">
-              <Chip icon={<IconCheck size={12} />} tone="green">
-                Pending caseworker review
-              </Chip>
-            </div>
-          </div>
-
-          <div className="px-6 py-5">
-            <div className="text-[12px] font-medium uppercase tracking-wider text-muted mb-3">
-              Matched name pairs
-            </div>
-            <div className="space-y-2">
-              {networkResult.node_matches.map((nm, i) => (
-                <div key={i} className="flex items-center gap-3 text-[14px]">
-                  <span className="text-ink font-medium">{nm.name_a}</span>
-                  <span className="text-muted text-[12px]">
-                    {nm.role_a} → {nm.role_b}
-                  </span>
-                  <span className="text-ink font-medium">{nm.name_b}</span>
-                  <span className="ml-auto text-muted text-[12px] font-mono">
-                    {Math.round(nm.composite_score * 100)}%
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Cosmetic CTA buttons — onClick absent per S8 Item 11 pattern.
-              Parent match view owns confirm/reject; this component is
-              visualization only. */}
-          <div
-            dir={dirFor(wl)}
-            className="border-t border-hair bg-subtle/40 px-6 py-3 flex flex-col sm:flex-row gap-2 sm:justify-end"
-          >
-            <Button variant="ghost">Escalate to supervisor</Button>
-            <Button variant="secondary">Reject</Button>
-            <Button variant="confirm" icon={<IconCheck size={16} />}>
-              Confirm match
-            </Button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

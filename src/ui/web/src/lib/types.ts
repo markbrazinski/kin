@@ -85,3 +85,18 @@ export type NetworkMatchResult = {
   node_matches: NodeMatch[];
   primary_match: NodeMatch | null;
 };
+
+// ----- Audit panel shapes (S15) -----
+
+export type AuditPanelSubBlock = {
+  pair_label: string;
+  source_utterance_a: string;
+  translation_a: string;
+  extracted_a: string;
+  source_utterance_b: string;
+  translation_b: string;
+  extracted_b: string;
+  match_reasoning: string;
+};
+
+export type AuditPanelTab = 'reasoning' | 'source_utterances' | 'audit_trail';
