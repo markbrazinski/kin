@@ -119,6 +119,11 @@ def app_factory(storage_dir: Path | None = None) -> FastAPI:
         app.include_router(qa.router)
         log.info("qa_mode_enabled", endpoint="/qa/inject")
 
+    # Demo endpoints: audit-query streaming + fixture seeding.
+    # Always registered — safe because the server only binds to 127.0.0.1.
+    from ui.server.routes import demo
+    app.include_router(demo.router)
+
     return app
 
 
