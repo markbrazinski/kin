@@ -7,7 +7,14 @@
 import { useState, useEffect } from 'react';
 import type { IntakeRecord } from '../lib/intakeRecord';
 
-const PRESENTATION_INITIAL_QUEUE_IDS = [89];
+// Deterministic UUIDs from src/integration/fixture_seed.py constants.
+// All four fixture records must be seeded before presentation mode activates.
+const PRESENTATION_INITIAL_QUEUE_IDS = [
+  '00000000-0000-0000-0000-000000000042', // Yusuf (paused_for_crisis)
+  '00000000-0000-0000-0000-000000000049', // Mariam (complete)
+  '00000000-0000-0000-0000-000000000089', // Ambient A — Spanish (complete)
+  '00000000-0000-0000-0000-000000000102', // Ambient B — Farsi (partial)
+];
 
 export type UsePresentationModeResult = {
   presentationActive: boolean;

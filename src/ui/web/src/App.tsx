@@ -425,10 +425,23 @@ type DemoDockProps = {
   onClose: () => void;
   phase: Phase;
   view: View;
+  onSeedFixture: (name: string) => Promise<void>;
 };
 
-function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis, onSplit, onClose, phase, view }: DemoDockProps) {
+function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis, onSplit, onClose, phase, view, onSeedFixture }: DemoDockProps) {
+  const [seeding, setSeeding] = React.useState<string | null>(null);
+
   if (!visible) return null;
+
+  async function handleSeed(name: string) {
+    setSeeding(name);
+    try {
+      await onSeedFixture(name);
+    } finally {
+      setSeeding(null);
+    }
+  }
+
   return (
     <div className="fixed bottom-3 left-3 z-30 bg-card border border-line rounded-kin-lg shadow-elevated px-3 py-2.5 w-[min(440px,calc(100%-24px))]">
       <div className="flex items-center justify-between mb-2">
@@ -471,6 +484,28 @@ function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis
                 onClick={onReset}>
           Reset
         </Button>
+      </div>
+      {/* Fixtures section — recording-day fallback buttons */}
+      <div className="mt-2.5 pt-2 border-t border-hair">
+        <div className="text-[10px] font-medium uppercase tracking-wider text-muted/60 mb-1.5">Fixtures</div>
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={seeding !== null}
+            onClick={() => handleSeed('yusuf')}
+          >
+            {seeding === 'yusuf' ? 'Loading…' : 'Load Yusuf fixture'}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={seeding !== null}
+            onClick={() => handleSeed('mariam')}
+          >
+            {seeding === 'mariam' ? 'Loading…' : 'Load Mariam fixture'}
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -1019,6 +1054,13 @@ function App() {
           onClose={() => setDemoDockVisible(false)}
           phase={phase}
           view={view}
+          onSeedFixture={async (name: string) => {
+            await fetch('/demo/seed-fixture', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ fixture_name: name }),
+            });
+          }}
         />
       )}
       {!demoDockVisible && !presentationActive && (

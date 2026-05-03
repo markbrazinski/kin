@@ -68,7 +68,10 @@ describe('usePresentationMode', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { result } = renderHook(() => usePresentationMode([])); // empty queue
     act(() => { result.current.setPresentationActive(true); });
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('record id=89 not found'));
+    // S17b: IDs are now fixture UUIDs, not integer 89.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('00000000-0000-0000-0000-000000000042'),
+    );
     warnSpy.mockRestore();
   });
 });
