@@ -361,7 +361,12 @@ async def ingest_audio(
             if v is not None and v != "" and v != []
         }
 
-    record = storage.update_intake_record(record.id, **intake_fields)
+    record = storage.update_intake_record(
+        record.id,
+        source_utterance=result.transcription,
+        whisper_translation=result.english_translation,
+        **intake_fields,
+    )
 
     # Stage 6: structlog minor_flagged signal.
     if intake_fields.get("is_minor"):
@@ -742,10 +747,11 @@ async def _trigger_matching(
     """Fan-out matching: pairwise match_records vs every eligible
     candidate; persist hits as proposed MatchLinks.
 
-    Filters per Part 1 REV 4 §"Required matching trigger behavior":
+    Filters per S13-rev:
       - drop self (don't self-match)
-      - drop candidates with status=paused_for_crisis (excluded from
-        candidate pool)
+      - paused_for_crisis records ARE included as candidates — the
+        intake is paused but the data is not lost; extracted fields
+        participate in match scoring identically to committed records
       - partial records DO enter the pool
 
     The matching algorithm (core.matching.match_records) is unchanged;
@@ -765,8 +771,11 @@ async def _trigger_matching(
     candidates = [
         r
         for r in all_records
-        if r.id != new_record.id and r.status != "paused_for_crisis"
+        if r.id != new_record.id
     ]
+    has_paused_candidates = any(
+        r.status == "paused_for_crisis" for r in candidates
+    )
 
     new_rfl = _to_rfl_record(new_record)
 
@@ -831,7 +840,8 @@ async def _trigger_matching(
                 details={
                     "network_match": (
                         network.model_dump() if network.matched else None
-                    )
+                    ),
+                    "includes_paused_candidates": has_paused_candidates,
                 },
             )
             created_links.append(link)
@@ -841,7 +851,10 @@ async def _trigger_matching(
         # produced no candidates" rather than guessing from event
         # absence. Single summary event with record_ids=[new_record_id]
         # and candidate_count=0.
-        storage.emit_match_proposed_empty(new_record_id=new_record.id)
+        storage.emit_match_proposed_empty(
+            new_record_id=new_record.id,
+            includes_paused_candidates=has_paused_candidates,
+        )
 
     log.info(
         "matching_trigger_fired",

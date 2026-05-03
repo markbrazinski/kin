@@ -117,11 +117,21 @@ class StorageAdapter:
     def update_intake_record(
         self,
         id: UUID,
+        *,
+        source_utterance: str | None = None,
+        whisper_translation: str | None = None,
         **fields: Any,
     ) -> IntakeRecord:
         """Read-modify-write. Emits field_extracted per changed field;
         triple-emits intake_paused + crisis_detected + referral_issued
         on status transition to paused_for_crisis.
+
+        source_utterance and whisper_translation are optional metadata
+        included in field_extracted event details when provided (S15a).
+        They record which spoken utterance and Whisper translation
+        produced the extracted fields, enabling the audit panel to show
+        "Source Arabic / Whisper translation / Gemma extraction" per
+        NodeMatch. Not stored on the IntakeRecord itself — audit-only.
         """
         records = self.list_intake_records()
         idx = next(
@@ -167,13 +177,18 @@ class StorageAdapter:
                 continue
             if old_dump.get(field_name) == new_dump.get(field_name):
                 continue
+            field_details: dict[str, Any] = {
+                "field_name": field_name,
+                "value": _jsonable(new_dump.get(field_name)),
+            }
+            if source_utterance is not None:
+                field_details["source_utterance"] = source_utterance
+            if whisper_translation is not None:
+                field_details["whisper_translation"] = whisper_translation
             self._append_audit_event(
                 event_type="field_extracted",
                 record_ids=[new_record.id],
-                details={
-                    "field_name": field_name,
-                    "value": _jsonable(new_dump.get(field_name)),
-                },
+                details=field_details,
             )
 
         return new_record
@@ -228,6 +243,7 @@ class StorageAdapter:
     def emit_match_proposed_empty(
         self,
         new_record_id: UUID,
+        includes_paused_candidates: bool = False,
     ) -> AuditEvent:
         """Emit a match_proposed audit event for a zero-result run.
 
@@ -245,6 +261,7 @@ class StorageAdapter:
             event_type="match_proposed",
             record_ids=[new_record_id],
             candidate_count=0,
+            details={"includes_paused_candidates": includes_paused_candidates},
         )
 
     def update_match_link_status(
