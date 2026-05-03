@@ -33,6 +33,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.rfl_schema import FamilyMember
+
 # ─── Type aliases (Literal enums, repo convention) ───────────────
 
 IntakeStatus = Literal["complete", "partial", "paused_for_crisis"]
@@ -92,6 +94,14 @@ class IntakeRecord(BaseModel):
     crisis_match_path: CrisisMatchPath | None = None
     referral_issued: bool = False
     referral_organization: str | None = None
+
+    family_roster: list[FamilyMember] = Field(default_factory=list)
+    """Additional family members mentioned during intake. Empty list for
+    pre-S9 records and intakes where no secondary members were named."""
+
+    searcher_name: str = ""
+    searcher_name_transliteration: str = ""
+    searcher_relationship_to_target: str = ""
 
 
 # ─── MatchLink ───────────────────────────────────────────────────

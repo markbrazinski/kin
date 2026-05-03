@@ -122,6 +122,38 @@ class Guardian(BaseModel):
     record being created. False when not captured OR refused."""
 
 
+class FamilyMember(BaseModel):
+    """A family member mentioned by the speaker during intake.
+
+    Captures secondary people in the speaker's family network —
+    siblings, parents, children — distinct from the primary missing-
+    person target. S10 extraction populates these; S11 matching reads
+    them for cross-role comparison.
+
+    name mirrors the full_name_source_script discipline: source-script
+    preservation. name_transliteration mirrors full_name_transliteration.
+    relationship_to_searcher is parallel to RFLRecord.relationship but
+    directional: this member's relationship TO the searcher (not to the
+    missing-person target).
+    """
+
+    name: str
+    """Source-script form of the member's name as stated."""
+
+    name_transliteration: str | None = None
+    """Latin transliteration when source script is non-Latin (ar/fa)."""
+
+    relationship_to_searcher: str
+    """Free-text relationship to the speaker ('son', 'sister', etc.)."""
+
+    status: Literal["missing", "known", "present"] = "missing"
+    """Whether this member is also missing, known to be safe, or
+    currently present with the searcher."""
+
+    age: int | None = None
+    last_seen_location: str | None = None
+
+
 class RFLRecord(BaseModel):
     """Refugee Family Linking record — the partial intake artifact.
 
@@ -132,6 +164,10 @@ class RFLRecord(BaseModel):
 
     NOT folded into TranscriptionResult — that's a separate audio-
     pipeline concern. Day 7-9 intake logic bridges them.
+
+    B2-S9 additions: family_roster and searcher_* fields for Option C
+    family-network matching. All default-valued; pre-S9 records load
+    cleanly with empty roster and null searcher fields.
     """
 
     name: Name | None = None
@@ -144,7 +180,9 @@ class RFLRecord(BaseModel):
     """Speaker's relationship to the subject ('mother', 'older
     brother', 'neighbor'). Free-text in the speaker's words at
     intake time; the matching layer normalizes when scoring
-    corroborating fields."""
+    corroborating fields. Legacy field — preserved alongside
+    searcher_relationship_to_target; transcription_pipeline.py reads
+    this field; no deprecation in S9."""
 
     last_seen: LastSeen | None = None
     """When/where the subject was last seen. None until surfaced."""
@@ -158,3 +196,21 @@ class RFLRecord(BaseModel):
     """Free-text identifying details ('scar above left eyebrow',
     'walks with a slight limp'). Empty list when none surfaced.
     Matching layer uses these as corroborating signals."""
+
+    family_roster: list[FamilyMember] = []
+    """Additional family members mentioned during intake. Empty list
+    when none surfaced (the common case). S10 extraction populates;
+    S11 matching reads for cross-role comparison."""
+
+    searcher_name: str | None = None
+    """Name of the person speaking (the searcher), in source script.
+    None when not captured — many intakes won't state the searcher's
+    own name explicitly."""
+
+    searcher_name_transliteration: str | None = None
+    """Latin transliteration of searcher_name when non-Latin script."""
+
+    searcher_relationship_to_target: str | None = None
+    """Structured parallel of relationship — the searcher's relationship
+    to the missing-person target. Both coexist; S10 populates both
+    when extraction is updated; this field enables S11 cross-role match."""
