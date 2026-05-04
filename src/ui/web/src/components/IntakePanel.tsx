@@ -1,16 +1,20 @@
 /* IntakePanel — self-contained intake-rendering surface.
 
    Owns its own SSE subscription via useEventStream and renders
-   IntakeTimer, MinorStrip, VoicePanel, CompletenessMeter, RecordCard
-   from the hook's reducer state.
+   VoicePanel, ChicletRibbon, Save button, RecordCard from the
+   hook's reducer state.
 
    Tent differentiation (split-view): tent="a" vs tent="b" picks the
    header accent color and font; both panels share the same
    high-contrast body theme.
+
+   S19: useVoicePhase lifted to IntakePanel so the Save button (above
+   the RecordCard) can call phaseSaved() directly alongside onSave().
 */
-import { useEffect, useRef, useState } from 'react';
-import { CompletenessMeter, Chip } from './primitives';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Chip } from './primitives';
 import { RecordCard } from './RecordCard';
+import { ChicletRibbon } from './ChicletRibbon';
 import { StructlogSidebar } from './StructlogSidebar';
 import { ToolCallsSidebar } from './ToolCallsSidebar';
 import { deriveToolCalls } from '../state/toolCalls';
@@ -20,6 +24,7 @@ import { useMicCapture } from '../hooks/useMicCapture';
 import {
   useVoicePhase,
   type PostStatus,
+  type VoicePhase,
 } from '../hooks/useVoicePhase';
 import { formatTimestamp, type Tent } from '../lib/formatters';
 import { containsNonLatinScript } from '../lib/script';
@@ -27,11 +32,6 @@ import { uploadAudioBlob } from '../lib/api';
 import { voiceCopy } from '../lib/voiceCopy';
 import { t } from '../lib/i18n';
 import type {
-  AuditEnvelope,
-  StructlogEnvelope,
-} from '../lib/sseEnvelope';
-import type {
-  CompletenessSegment,
   Language,
   RecordData,
 } from '../lib/types';
@@ -60,6 +60,8 @@ export type IntakePanelProps = {
   /* S13: Save button — shown when phase is "done". */
   phase?: string;
   onSave?: () => void;
+  /* S19: post-save voice panel transition — called after save commits. */
+  onSaved?: () => void;
 };
 
 const ACCENT_BY_TENT: Record<Tent, 'primary' | 'amber'> = {
@@ -78,14 +80,15 @@ export function IntakePanel({
   panelLabel = 'Intake',
   workerLanguage,
   speakerLanguage,
-  timerSec,
-  timerRunning,
+  timerSec: _timerSec,
+  timerRunning: _timerRunning,
   crisisOpen,
   eventSourceFactory,
   fallbackRecord,
   fallbackJustPopulated = null,
-  phase,
+  phase: externalPhase,
   onSave,
+  onSaved,
 }: IntakePanelProps) {
   const { state } = useEventStream({
     sourceDeviceId,
@@ -124,28 +127,74 @@ export function IntakePanel({
   const showTransliterationField =
     !!record.name && containsNonLatinScript(record.name);
 
-  const minor = !!record.age && parseInt(record.age, 10) > 0 && parseInt(record.age, 10) < 18;
-  const guardianFilled =
-    minor && Object.values(record.guardian).every((v) => !!v && v.trim() !== '');
+  const hasMinor = record.missingPersons.some(
+    m => typeof m.age === 'number' && m.age > 0 && m.age < 18
+  );
+  // Dual-path guard: also check record.age for SSE records not yet using family-network schema.
+  const minor = hasMinor || (!!record.age && parseInt(record.age, 10) > 0 && parseInt(record.age, 10) < 18);
 
-  const segments: CompletenessSegment[] = [
-    { key: 'name', label: 'Name', filled: !!record.name },
-    { key: 'age', label: 'Age', filled: !!record.age },
-    { key: 'rel', label: 'Relationship', filled: !!record.relationship },
-    {
-      key: 'ls',
-      label: 'Last seen',
-      filled: !!(record.lastSeenLocation && record.lastSeenDate),
-    },
-    {
-      key: 'marks',
-      label: 'Marks',
-      filled: !!record.physicalDesc,
-    },
-    ...(minor
-      ? [{ key: 'guard', label: 'Guardian/CP', filled: !!guardianFilled }]
-      : []),
-  ];
+  const detailedCount = record.missingPersons.filter(
+    m => !!m.lastSeen || (m.marks && m.marks.length > 0)
+  ).length;
+
+  // ── Voice phase (lifted from SimpleVoicePanel so Save button can call phaseSaved) ──
+
+  const [lastPostStatus, setLastPostStatus] = useState<PostStatus | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const intakeIdRef = useRef<string | null>(state.intakeId);
+  intakeIdRef.current = state.intakeId;
+
+  const { state: micState, start, stop, error: micError } = useMicCapture({
+    onStop: useCallback(async (blob: Blob) => {
+      if (!sourceDeviceId) {
+        setUploadError('sourceDeviceId not configured for this panel; cannot post audio');
+        return;
+      }
+      try {
+        const resp = await uploadAudioBlob({
+          blob,
+          lang: speakerLanguage,
+          sourceDeviceId,
+          intakeId: intakeIdRef.current,
+        });
+        setUploadError(null);
+        setLastPostStatus(resp.status === 'paused_for_crisis' ? 'paused_for_crisis' : 'completed');
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : String(err));
+      }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sourceDeviceId, speakerLanguage]),
+  });
+
+  const {
+    phase: voicePhase,
+    onBegin: phaseBegin,
+    onStop: phaseStop,
+    onSaved: phaseSaved,
+  } = useVoicePhase({
+    micState,
+    auditEvents: state.auditEvents,
+    structlogEvents: state.structlogEvents,
+    lastPostStatus,
+  });
+
+  const handleBegin = () => {
+    phaseBegin();
+    setLastPostStatus(null);
+    void start();
+  };
+  const handleStop = () => {
+    phaseStop();
+    stop();
+  };
+  const handleSave = () => {
+    onSave?.();
+    phaseSaved();
+    onSaved?.();
+  };
+
+  const showSave = (externalPhase === 'done' || voicePhase === 'done') && !!onSave;
 
   const accent = ACCENT_BY_TENT[tent];
   const headerFont = HEADER_FONT_BY_TENT[tent];
@@ -170,27 +219,53 @@ export function IntakePanel({
         </div>
       </div>
 
-      {/* Voice panel: simplified, mic-capture-driven (S5). Begin/Stop
-          internalizes useMicCapture. */}
+      {/* Voice panel: compact mic-capture row */}
       <div className="mb-5">
         <SimpleVoicePanel
           workerLanguage={workerLanguage}
           speakerLanguage={speakerLanguage}
-          sourceDeviceId={sourceDeviceId}
-          intakeId={state.intakeId}
-          auditEvents={state.auditEvents}
-          structlogEvents={state.structlogEvents}
+          voicePhase={voicePhase}
+          micError={micError}
+          uploadError={uploadError}
+          onBegin={handleBegin}
+          onStop={handleStop}
         />
       </div>
 
-      {/* Completeness meter */}
-      <div className="mb-4 px-1">
-        <CompletenessMeter segments={segments} />
+      {/* Chiclet ribbon — family-network completeness (replaces CompletenessMeter) */}
+      <div className="mb-4">
+        <ChicletRibbon
+          searcherName={record.searcherName}
+          missingPersonsCount={record.missingPersons.length}
+          detailedCount={detailedCount}
+        />
       </div>
 
-      {/* Record card */}
+      {/* Save button — outside card, anchored top-right of record-card area */}
+      <div className="flex items-end justify-between mb-2 min-h-[40px]">
+        <div />
+        {showSave && (
+          <div className="flex flex-col items-end gap-0.5">
+            <button
+              type="button"
+              onClick={handleSave}
+              className="px-4 h-9 text-[13px] font-medium rounded-kin bg-primary text-white hover:bg-primary-2 transition-colors"
+            >
+              Save record
+            </button>
+            <span className="text-[11px] text-muted">Commits record and checks for matches in queue</span>
+          </div>
+        )}
+      </div>
+
+      {/* Record card — enriched with metadata from SSE state */}
       <RecordCard
-        record={record}
+        record={{
+          ...record,
+          recordId: state.intakeId ?? undefined,
+          capturedAt: state.capturedAt ?? undefined,
+          syncStatus: 'local',
+        }}
         minor={minor}
         justPopulatedKey={populatedKey}
         disabled={crisisOpen}
@@ -225,19 +300,6 @@ export function IntakePanel({
         </span>
       </div>
 
-      {/* S13: Save record — visible only when extraction is complete */}
-      {phase === 'done' && onSave && (
-        <div className="mt-4 flex justify-end">
-          <button
-            type="button"
-            onClick={onSave}
-            className="px-4 h-9 text-[13px] font-medium rounded-kin bg-green text-white hover:bg-green/90 transition-colors"
-          >
-            Save record
-          </button>
-        </div>
-      )}
-
       {/* Per-panel structlog sidebar — system event log */}
       <div className="mt-4">
         <StructlogSidebar events={state.structlogEvents} />
@@ -251,86 +313,30 @@ export function IntakePanel({
   );
 }
 
-/* Compact mic-capture row used inside IntakePanel.
-
-   Internalizes useMicCapture (per S5 lock #4: Begin = real intake;
-   runDemo() reachable only via DemoDock's Start demo button). Begin
-   button toggles to Stop while recording. On stop, the captured Blob
-   is POSTed to /intake/audio with the panel's current intake_id (if
-   any). Backend either creates a new record (turn 1) or extends the
-   existing one (subsequent turns).
+/* Compact mic-capture row — purely presentational.
+   All state lives in IntakePanel; this renders captions and buttons only.
 */
 function SimpleVoicePanel({
   workerLanguage,
   speakerLanguage,
-  sourceDeviceId,
-  intakeId,
-  auditEvents,
-  structlogEvents,
+  voicePhase,
+  micError,
+  uploadError,
+  onBegin,
+  onStop,
 }: {
-  /* S6 split: workerLanguage drives caption + button labels;
-     speakerLanguage flows to the POST and surfaces as the chip
-     metadata showing what language the speaker is using. */
   workerLanguage: Language;
   speakerLanguage: Language;
-  sourceDeviceId: string | undefined;
-  intakeId: string | null;
-  auditEvents: AuditEnvelope[];
-  structlogEvents: StructlogEnvelope[];
+  voicePhase: VoicePhase;
+  micError: string | null;
+  uploadError: string | null;
+  onBegin: () => void;
+  onStop: () => void;
 }) {
-  /* Read intake_id from a ref so the most-recent value is used on
-     stop, not whatever was current at render-time. */
-  const intakeIdRef = useRef<string | null>(intakeId);
-  intakeIdRef.current = intakeId;
-
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [lastPostStatus, setLastPostStatus] = useState<PostStatus | null>(null);
-
-  const { state: micState, start, stop, error } = useMicCapture({
-    onStop: async (blob) => {
-      if (!sourceDeviceId) {
-        setUploadError(
-          'sourceDeviceId not configured for this panel; cannot post audio',
-        );
-        return;
-      }
-      try {
-        const resp = await uploadAudioBlob({
-          blob,
-          lang: speakerLanguage,
-          sourceDeviceId,
-          intakeId: intakeIdRef.current,
-        });
-        setUploadError(null);
-        setLastPostStatus(
-          resp.status === 'paused_for_crisis' ? 'paused_for_crisis' : 'completed',
-        );
-      } catch (err) {
-        setUploadError(err instanceof Error ? err.message : String(err));
-      }
-    },
-  });
-
-  const { phase, onBegin: phaseBegin, onStop: phaseStop } = useVoicePhase({
-    micState,
-    auditEvents,
-    structlogEvents,
-    lastPostStatus,
-  });
-
-  const caption = voiceCopy[phase].en;
-  const showBegin = phase === 'ready' || phase === 'done';
-  const showStop = phase === 'recording';
-
-  const handleBegin = () => {
-    phaseBegin();
-    setLastPostStatus(null);
-    void start();
-  };
-  const handleStop = () => {
-    phaseStop();
-    stop();
-  };
+  const caption = voiceCopy[voicePhase].en;
+  const showBegin = voicePhase === 'ready' || voicePhase === 'done' || voicePhase === 'saved';
+  const showStop = voicePhase === 'recording';
+  const beginLabel = voicePhase === 'saved' ? 'Begin new intake' : t('voice.begin', workerLanguage);
 
   return (
     <div className="flex items-center justify-between p-3 bg-card border border-line rounded-kin">
@@ -338,29 +344,27 @@ function SimpleVoicePanel({
         <div className="text-[14px] font-medium text-ink" aria-live="polite">
           {caption}
         </div>
-        {/* Chip showing what language the speaker is using —
-            metadata about the speaker, not chrome. */}
         <div className="text-[12px] text-muted uppercase tracking-wider">
           {speakerLanguage}
         </div>
-        {(error ?? uploadError) && (
+        {(micError ?? uploadError) && (
           <div className="text-[12px] text-red">
-            {error ?? uploadError}
+            {micError ?? uploadError}
           </div>
         )}
       </div>
       <div className="flex items-center gap-3">
         {showBegin ? (
           <button
-            onClick={handleBegin}
+            onClick={onBegin}
             className="text-[12px] font-medium text-primary hover:text-primary-2"
           >
-            {t('voice.begin', workerLanguage)}
+            {beginLabel}
           </button>
         ) : null}
         {showStop ? (
           <button
-            onClick={handleStop}
+            onClick={onStop}
             className="text-[12px] font-medium text-red hover:opacity-80"
           >
             {t('voice.stop', workerLanguage)}

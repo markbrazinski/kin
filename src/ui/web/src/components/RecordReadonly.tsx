@@ -37,6 +37,7 @@ function toRecordData(r: IntakeRecord): RecordData {
     searcherNameLatin: '',
     missingPersons: [],
     familyRoster: [],
+    syncStatus: 'local',
   };
 }
 
@@ -100,6 +101,17 @@ export function RecordReadonly({ record, onBack, onNew }: RecordReadonlyProps) {
 
       {/* Status-specific banner */}
       <StatusBanner status={record.status} isCrisis={record.is_crisis} />
+
+      {/* Biographic summary — name/age/relationship (no longer inside RecordCard) */}
+      {(recordData.name || recordData.age || recordData.relationship) && (
+        <div className="mb-3 px-1 flex gap-6 text-[13px] text-muted">
+          {recordData.name && (
+            <span><span className="font-medium text-ink">{recordData.name}</span></span>
+          )}
+          {recordData.age && <span>Age {recordData.age}</span>}
+          {recordData.relationship && <span>{recordData.relationship}</span>}
+        </div>
+      )}
 
       {/* Record card (read-only — no live-state hooks) */}
       <RecordCard

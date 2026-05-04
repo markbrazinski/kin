@@ -32,6 +32,7 @@ export type EventStreamState = {
   structlogEvents: StructlogEnvelope[];
   connection: ConnectionState;
   intakeId: string | null;
+  capturedAt: string | null;
 };
 
 export type EventStreamAction =
@@ -46,6 +47,7 @@ export const INITIAL_STATE: EventStreamState = {
   structlogEvents: [],
   connection: 'connecting',
   intakeId: null,
+  capturedAt: null,
 };
 
 /* IntakeRecord field name (Pydantic snake_case) → RecordData property
@@ -118,6 +120,7 @@ function applyAuditEvent(
   const evType = envelope.payload.event_type;
   if (evType === 'intake_created' && envelope.payload.record_ids[0]) {
     next.intakeId = envelope.payload.record_ids[0];
+    next.capturedAt = envelope.at;
   }
   if (evType === 'field_extracted') {
     next.record = mapAuditEventToRecord(state.record, envelope);

@@ -49,6 +49,8 @@ export type FamilyMember = {
   age?: number;
   relationship: string;  // source-script
   status?: FamilyMemberStatus;
+  lastSeen?: string;     // per-person last-seen free text (maps from Python last_seen_location)
+  marks?: string[];      // per-person distinguishing marks (extraction pipeline extension: v1.1)
 };
 
 export type RecordData = {
@@ -72,6 +74,10 @@ export type RecordData = {
   searcherNameLatin: string;
   missingPersons: FamilyMember[];
   familyRoster: FamilyMember[];
+  // Metadata strip (S19)
+  recordId?: string;      // from intake_created record_ids[0]
+  capturedAt?: string;    // ISO 8601 from intake_created envelope.at
+  syncStatus?: 'local' | 'queued' | 'synced';
 };
 
 // ----- UI summary shapes -----

@@ -36,7 +36,8 @@ export type VoicePhase =
   | 'recording'
   | 'transcribing'
   | 'extracting'
-  | 'done';
+  | 'done'
+  | 'saved';
 
 export type PostStatus = 'completed' | 'paused_for_crisis';
 
@@ -52,6 +53,7 @@ export type VoicePhaseResult = {
   isCrisis: boolean;
   onBegin: () => void;
   onStop: () => void;
+  onSaved: () => void;
   reset: () => void;
 };
 
@@ -67,6 +69,7 @@ type Action =
   | { type: 'BEGIN' }
   | { type: 'STOP' }
   | { type: 'RESET' }
+  | { type: 'SAVED' }
   | { type: 'MIC_RECORDING' }
   | { type: 'MIC_ERROR' }
   | { type: 'STRUCTLOG_BATCH'; sawToolCallInvoked: boolean; sawCrisisPathTaken: boolean; newCount: number }
@@ -84,7 +87,7 @@ const INITIAL_STATE: State = {
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'BEGIN':
-      if (state.phase === 'ready' || state.phase === 'done') {
+      if (state.phase === 'ready' || state.phase === 'done' || state.phase === 'saved') {
         // S5-fix: reset lastConsumedPostStatus to null on every new
         // turn. Combined with the watcher's phase-gate (only fires
         // POST_RESOLVED when phase is transcribing/extracting), this
@@ -160,6 +163,12 @@ function reducer(state: State, action: Action): State {
         phase: 'done',
         lastConsumedPostStatus: action.status,
       };
+
+    case 'SAVED':
+      if (state.phase === 'done') {
+        return { ...state, phase: 'saved' };
+      }
+      return state;
 
     default:
       return state;
@@ -240,6 +249,7 @@ export function useVoicePhase(inputs: VoicePhaseInputs): VoicePhaseResult {
 
   const onBegin = useCallback(() => dispatch({ type: 'BEGIN' }), []);
   const onStop = useCallback(() => dispatch({ type: 'STOP' }), []);
+  const onSaved = useCallback(() => dispatch({ type: 'SAVED' }), []);
   const reset = useCallback(() => dispatch({ type: 'RESET' }), []);
 
   return {
@@ -247,6 +257,7 @@ export function useVoicePhase(inputs: VoicePhaseInputs): VoicePhaseResult {
     isCrisis: state.isCrisis,
     onBegin,
     onStop,
+    onSaved,
     reset,
   };
 }

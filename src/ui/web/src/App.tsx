@@ -2,10 +2,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
-  IconMic, IconLock, IconLanguages, IconInfo, IconShield,
+  IconMic, IconLock, IconLanguages, IconInfo,
   IconArrowRight, IconPlay, IconAlert, IconRotate, IconLink, IconX,
 } from './components/icons';
-import { Chip, Button, Waveform, CompletenessMeter } from './components/primitives';
+import { Button, Waveform, CompletenessMeter } from './components/primitives';
 import { RecordCard } from './components/RecordCard';
 import { CrisisReferralCard, TransliterationMatch } from './components/CrisisAndTranslit';
 import { NetworkMatch, DEFAULT_NETWORK_RESULT } from './components/NetworkMatch';
@@ -120,17 +120,20 @@ const MARIAM_DEMO_STEPS: DemoStep[] = [
   { at: 4000,
     populateRaw: { searcherName: "مريم صالح", searcherNameLatin: "Mariam Saleh" },
     trace: { name: "extract_intake_fields", args: { searcher_name: "مريم صالح" }, result: "ok" } },
-  // Missing — Yusuf (brother)
+  // Missing — Yusuf (brother) — with per-person lastSeen + marks (complete intake)
   { at: 5200,
     populateRaw: { missingPersons: [
-      { name: "يوسف", nameLatin: "Yusuf", age: 35, relationship: "أخ", status: "MISSING" },
+      { name: "يوسف", nameLatin: "Yusuf", age: 35, relationship: "أخ", status: "MISSING",
+        lastSeen: "البوابة الجنوبية · Southern gate", marks: ["أصلع جزئياً · partial baldness"] },
     ]},
     trace: { name: "extract_intake_fields", args: { missing_persons: "[يوسف, 35, brother]" }, result: "ok" } },
-  // Missing — Mohamad (son, minor)
+  // Missing — Mohamad (son, minor) — with per-person lastSeen + marks
   { at: 6400,
     populateRaw: { missingPersons: [
-      { name: "يوسف", nameLatin: "Yusuf", age: 35, relationship: "أخ", status: "MISSING" },
-      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن", status: "MISSING" },
+      { name: "يوسف", nameLatin: "Yusuf", age: 35, relationship: "أخ", status: "MISSING",
+        lastSeen: "البوابة الجنوبية · Southern gate", marks: ["أصلع جزئياً · partial baldness"] },
+      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن", status: "MISSING",
+        lastSeen: "البوابة الجنوبية · Southern gate", marks: ["وحمة على الخد الأيسر · birthmark left cheek"] },
     ]},
     trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
   // Last seen
@@ -448,33 +451,7 @@ function IntakeTimer({ seconds, running }: IntakeTimerProps) {
 }
 
 // ---------- Minor-detected header strip ----------------------------------
-type MinorStripProps = {
-  complete: boolean;
-};
-
-function MinorStrip({ complete }: MinorStripProps) {
-  // Persistent, not dismissible. Clears only when guardian subsection complete.
-  return (
-    <div className="bg-amber-soft border border-amber/40 rounded-kin px-4 py-3 flex items-start gap-3">
-      <div className="shrink-0 w-8 h-8 rounded-kin bg-white border border-amber/40 text-[oklch(0.42_0.12_75)] flex items-center justify-center">
-        <IconShield size={16} />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-[15px] font-semibold text-[oklch(0.32_0.12_75)]">
-          Child protection routing required — under 18 detected
-        </div>
-        <div className="text-[13.5px] text-[oklch(0.42_0.08_75)] mt-0.5">
-          {complete
-            ? "Guardian & Protection section complete. Clearing flag…"
-            : "Record will remain flagged Incomplete — Minor Protection Required until the Guardian & Protection Status sub-section is complete."}
-        </div>
-      </div>
-      <div className="hidden sm:block">
-        <Chip icon={<IconArrowRight size={12} />} tone="amber">Below: Guardian & Protection</Chip>
-      </div>
-    </div>
-  );
-}
+// MinorStrip is now rendered inside RecordCard (V3 — B2-S19).
 
 // ---------- Keyboard hint ------------------------------------------------
 type ShortcutHintProps = {
@@ -1023,13 +1000,6 @@ function App() {
                   <IntakeTimer seconds={timerSec} running={timerRunning} />
                 </div>
 
-                {/* Minor-detected strip — persistent, above card */}
-                {minor && (
-                  <div className="mb-5">
-                    <MinorStrip complete={guardianFilled} />
-                  </div>
-                )}
-
                 {/* Voice panel — single-view mic capture (S5).
                     sourceDeviceId is hardcoded for the single-panel
                     workflow (no split context). intakeId comes from
@@ -1062,9 +1032,31 @@ function App() {
                   <CompletenessMeter segments={segments} />
                 </div>
 
-                {/* Record card */}
+                {/* Save button — above card, top-right (S19) */}
+                <div className="flex items-end justify-between mb-2 min-h-[40px]">
+                  <div />
+                  {phase === 'done' && (
+                    <div className="flex flex-col items-end gap-0.5">
+                      <button
+                        type="button"
+                        onClick={handleSave}
+                        className="px-4 h-9 text-[13px] font-medium rounded-kin bg-primary text-white hover:bg-primary-2 transition-colors"
+                      >
+                        Save record
+                      </button>
+                      <span className="text-[11px] text-muted">Commits record and checks for matches in queue</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Record card — enriched with metadata */}
                 <RecordCard
-                  record={record}
+                  record={{
+                    ...record,
+                    recordId: streamState.intakeId ?? undefined,
+                    capturedAt: streamState.capturedAt ?? undefined,
+                    syncStatus: 'local',
+                  }}
                   minor={minor}
                   justPopulatedKey={justPopulated}
                   disabled={crisisOpen}
@@ -1074,18 +1066,6 @@ function App() {
                   <IconLock size={12} />
                   <span>Record stored on this device. Will sync when you next connect to the local hub.</span>
                 </div>
-
-                {phase === 'done' && (
-                  <div className="mt-4 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={handleSave}
-                      className="px-4 h-9 text-[13px] font-medium rounded-kin bg-green text-white hover:bg-green/90 transition-colors"
-                    >
-                      Save record
-                    </button>
-                  </div>
-                )}
               </>
             )}
 

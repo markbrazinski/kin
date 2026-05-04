@@ -10,7 +10,7 @@ import type { AuditEnvelope } from '../lib/sseEnvelope';
    render test below. The 5 existing tests don't assert phase strings,
    so they pass regardless of the mocked default ('ready'). */
 const mockPhase = {
-  current: 'ready' as 'ready' | 'awaiting' | 'recording' | 'transcribing' | 'extracting' | 'done',
+  current: 'ready' as 'ready' | 'awaiting' | 'recording' | 'transcribing' | 'extracting' | 'done' | 'saved',
 };
 vi.mock('../hooks/useVoicePhase', () => ({
   useVoicePhase: () => ({
@@ -18,6 +18,7 @@ vi.mock('../hooks/useVoicePhase', () => ({
     isCrisis: false,
     onBegin: vi.fn(),
     onStop: vi.fn(),
+    onSaved: vi.fn(),
     reset: vi.fn(),
   }),
 }));
@@ -41,7 +42,9 @@ function makeFieldExtractedEnvelope(value: string): AuditEnvelope {
       match_id: null,
       actor: 'kin_system',
       details: {
-        field_name: 'full_name_source_script',
+        // V3: use searcher_name (renders in Family Network) rather than
+        // full_name_source_script (Biographic section removed in S19).
+        field_name: 'searcher_name',
         value,
       },
     },
@@ -142,8 +145,15 @@ describe('IntakePanel', () => {
       />,
     );
     const es = MockEventSource.last()!;
+    // Use full_name_source_script to populate record.name (transliteration field trigger)
     act(() => {
-      es.emit('audit_event', JSON.stringify(makeFieldExtractedEnvelope('محمد')));
+      es.emit('audit_event', JSON.stringify({
+        type: 'audit_event', at: '2026-04-28T12:00:00Z', source_device_id: null,
+        payload: { id: '00000000-0000-0000-0000-000000000001', at: '2026-04-28T12:00:00Z',
+          event_type: 'field_extracted', record_ids: ['00000000-0000-0000-0000-000000000099'],
+          match_id: null, actor: 'kin_system',
+          details: { field_name: 'full_name_source_script', value: 'محمد' } },
+      }));
     });
     const input = container.querySelector(
       'input[aria-label="Transliteration"]',
@@ -162,8 +172,15 @@ describe('IntakePanel', () => {
       />,
     );
     const es = MockEventSource.last()!;
+    // Use full_name_source_script to populate record.name
     act(() => {
-      es.emit('audit_event', JSON.stringify(makeFieldExtractedEnvelope('Carlos')));
+      es.emit('audit_event', JSON.stringify({
+        type: 'audit_event', at: '2026-04-28T12:00:00Z', source_device_id: null,
+        payload: { id: '00000000-0000-0000-0000-000000000001', at: '2026-04-28T12:00:00Z',
+          event_type: 'field_extracted', record_ids: ['00000000-0000-0000-0000-000000000099'],
+          match_id: null, actor: 'kin_system',
+          details: { field_name: 'full_name_source_script', value: 'Carlos' } },
+      }));
     });
     const input = container.querySelector(
       'input[aria-label="Transliteration"]',
@@ -173,9 +190,9 @@ describe('IntakePanel', () => {
 });
 
 describe('SimpleVoicePanel — parameterized phase render (compact UI)', () => {
-  type Phase = 'ready' | 'awaiting' | 'recording' | 'transcribing' | 'extracting' | 'done';
-  const ALL_PHASES: Phase[] = ['ready', 'awaiting', 'recording', 'transcribing', 'extracting', 'done'];
-  const SHOW_BEGIN: Phase[] = ['ready', 'done'];
+  type Phase = 'ready' | 'awaiting' | 'recording' | 'transcribing' | 'extracting' | 'done' | 'saved';
+  const ALL_PHASES: Phase[] = ['ready', 'awaiting', 'recording', 'transcribing', 'extracting', 'done', 'saved'];
+  const SHOW_BEGIN: Phase[] = ['ready', 'done', 'saved'];
   const SHOW_STOP_COMPACT: Phase[] = ['recording'];
 
   for (const phase of ALL_PHASES) {
@@ -196,8 +213,9 @@ describe('SimpleVoicePanel — parameterized phase render (compact UI)', () => {
       const liveRegion = caption.closest('[aria-live="polite"]');
       expect(liveRegion).not.toBeNull();
 
-      // Begin in {ready, done} only.
-      const beginBtn = screen.queryByRole('button', { name: 'Begin' });
+      // Begin in {ready, done, saved}. For 'saved', label is "Begin new intake".
+      const beginBtnName = phase === 'saved' ? 'Begin new intake' : 'Begin';
+      const beginBtn = screen.queryByRole('button', { name: beginBtnName });
       if (SHOW_BEGIN.includes(phase)) {
         expect(beginBtn).not.toBeNull();
       } else {
@@ -220,11 +238,10 @@ describe('SimpleVoicePanel — parameterized phase render (compact UI)', () => {
   }
 });
 
-describe('IntakePanel — S3 marks bubble fix regression', () => {
-  it('Test 5 — Marks section shows as filled when distinguishing_marks is populated', () => {
-    /* Regression guard for the bug where `filled: !!(record.physicalDesc
-       && record.features)` never fired because record.features has no
-       FIELD_MAP entry. Fixed to `filled: !!record.physicalDesc`. */
+describe('IntakePanel — S19 chiclet ribbon regression', () => {
+  it('Searcher chiclet dot activates (bg-primary) when searcher_name is extracted via SSE', () => {
+    /* Guards that SSE field_extracted events reach the ChicletRibbon.
+       Previously this guarded CompletenessMeter fill; now guards ChicletRibbon dot state. */
     const { container } = render(
       <IntakePanel
         sourceDeviceId="tent_a"
@@ -236,7 +253,6 @@ describe('IntakePanel — S3 marks bubble fix regression', () => {
     );
     const es = MockEventSource.last()!;
 
-    // Emit distinguishing_marks field_extracted event
     act(() => {
       es.emit(
         'audit_event',
@@ -251,18 +267,44 @@ describe('IntakePanel — S3 marks bubble fix regression', () => {
             record_ids: ['00000000-0000-0000-0000-000000000099'],
             match_id: null,
             actor: 'kin_system',
-            details: { field_name: 'distinguishing_marks', value: 'marca en la mejilla derecha' },
+            details: { field_name: 'searcher_name', value: 'يوسف العمر' },
           },
         }),
       );
     });
 
-    // The completeness meter "N of M sections" count increases when
-    // Marks is filled. The segment bar for Marks gets bg-primary when filled.
-    const filledBars = container.querySelectorAll('.bg-primary.border-primary');
-    expect(filledBars.length).toBeGreaterThan(0);
+    // ChicletRibbon Searcher dot turns bg-primary when searcherName is populated
+    const primaryDot = container.querySelector('.bg-primary');
+    expect(primaryDot).not.toBeNull();
 
-    // The "Marks" label is visible in the meter
-    expect(container.textContent).toContain('Marks');
+    // ChicletRibbon renders "Searcher" label
+    expect(container.textContent).toContain('Searcher');
+  });
+
+  it('Save button is positioned above RecordCard in DOM when phase=done', () => {
+    mockPhase.current = 'done';
+    const onSave = vi.fn();
+    const { container } = render(
+      <IntakePanel
+        sourceDeviceId="tent_a"
+        tent="a"
+        panelLabel="Tent A"
+        eventSourceFactory={factory}
+        phase="done"
+        onSave={onSave}
+        {...baseProps}
+      />,
+    );
+
+    const saveBtn = container.querySelector('button[type="button"]') as HTMLButtonElement | null;
+    expect(saveBtn).not.toBeNull();
+    expect(saveBtn!.textContent).toContain('Save record');
+
+    // The card border element should appear after the save button in the DOM
+    const card = container.querySelector('.rounded-kin-lg') as HTMLElement | null;
+    expect(card).not.toBeNull();
+    const order = saveBtn!.compareDocumentPosition(card!);
+    // DOCUMENT_POSITION_FOLLOWING = 4
+    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

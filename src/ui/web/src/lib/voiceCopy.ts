@@ -11,4 +11,5 @@ export const voiceCopy: Record<VoicePhase, { en: string }> = {
   transcribing: { en: 'Transcribing audio…' },
   extracting:   { en: 'Structuring record…' },
   done:         { en: 'Intake complete' },
+  saved:        { en: 'Record saved — ready for next intake' },
 };
