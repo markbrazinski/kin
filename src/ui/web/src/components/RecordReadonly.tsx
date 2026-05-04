@@ -33,6 +33,10 @@ function toRecordData(r: IntakeRecord): RecordData {
       cmKnown: '',
       referralStatus: '',
     },
+    searcherName: '',
+    searcherNameLatin: '',
+    missingPersons: [],
+    familyRoster: [],
   };
 }
 

@@ -41,6 +41,16 @@ export type GuardianData = {
   referralStatus?: string;
 };
 
+export type FamilyMemberStatus = 'MISSING' | 'WITH_SEARCHER' | 'UNKNOWN';
+
+export type FamilyMember = {
+  name: string;          // source-script (Arabic RTL for ar/fa)
+  nameLatin?: string;    // transliteration, worker-entered or Gemma-produced
+  age?: number;
+  relationship: string;  // source-script
+  status?: FamilyMemberStatus;
+};
+
 export type RecordData = {
   name: string;
   nameVariants: NameVariant[] | null;
@@ -57,6 +67,11 @@ export type RecordData = {
   physicalDesc: string;
   features: string;
   guardian: GuardianData;
+  // Family network (S18 — multi-entity extraction)
+  searcherName: string;
+  searcherNameLatin: string;
+  missingPersons: FamilyMember[];
+  familyRoster: FamilyMember[];
 };
 
 // ----- UI summary shapes -----

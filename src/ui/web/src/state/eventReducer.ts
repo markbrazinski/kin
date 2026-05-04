@@ -17,7 +17,7 @@ import type {
   StructlogEnvelope,
 } from '../lib/sseEnvelope';
 import { isAuditEnvelope } from '../lib/sseEnvelope';
-import type { RecordData } from '../lib/types';
+import type { FamilyMember, RecordData } from '../lib/types';
 import { INITIAL_RECORD } from '../lib/initialState';
 
 export type ConnectionState =
@@ -49,8 +49,7 @@ export const INITIAL_STATE: EventStreamState = {
 };
 
 /* IntakeRecord field name (Pydantic snake_case) → RecordData property
-   name. Fields not in this table flow into auditEvents only — see
-   plan §"Flagged for Mark" item 1. */
+   name. Fields not in this table flow into auditEvents only. */
 const FIELD_MAP: Partial<Record<string, keyof RecordData>> = {
   full_name_source_script: 'name',
   full_name_transliteration: 'name',
@@ -59,6 +58,16 @@ const FIELD_MAP: Partial<Record<string, keyof RecordData>> = {
   last_seen_location: 'lastSeenLocation',
   last_seen_date: 'lastSeenDate',
   distinguishing_marks: 'physicalDesc',
+  searcher_name: 'searcherName',
+  searcher_name_transliteration: 'searcherNameLatin',
+};
+
+/* Array fields: value arrives as a JSON array from the backend and is
+   stored as-is (no string coercion). The mapper branch below handles
+   these separately from the scalar FIELD_MAP path. */
+const ARRAY_FIELD_MAP: Partial<Record<string, keyof RecordData>> = {
+  family_roster: 'familyRoster',
+  missing_persons: 'missingPersons',
 };
 
 /* Apply a single field_extracted audit event to a RecordData. Returns
@@ -74,26 +83,26 @@ export function mapAuditEventToRecord(
   };
   const fieldName = details.field_name;
   if (!fieldName) return record;
+
+  const rawValue = details.value;
+  if (rawValue === null || rawValue === undefined) return record;
+
+  // Array fields: store the raw array value without string coercion.
+  const arrayKey = ARRAY_FIELD_MAP[fieldName];
+  if (arrayKey) {
+    if (!Array.isArray(rawValue)) return record;
+    return { ...record, [arrayKey]: rawValue as FamilyMember[] };
+  }
+
   const targetKey = FIELD_MAP[fieldName];
   if (!targetKey) return record;
 
-  const rawValue = details.value;
-  if (rawValue === null || rawValue === undefined || rawValue === '') {
-    return record;
-  }
+  if (rawValue === '') return record;
 
-  // RecordData fields are strings (or stringified primitives) at the
-  // form layer. Coerce numbers to strings so existing form code keeps
-  // working.
+  // Scalar fields: coerce numbers to strings for form-layer compatibility.
   const stringValue =
     typeof rawValue === 'string' ? rawValue : String(rawValue);
 
-  // Last-writer-wins on every mapped field. The S4 transliteration
-  // input is bound to local component state, NOT to record.name, so
-  // there's no source_script-vs-transliteration collision happening
-  // at this layer today. If a future dual-name UI binds both Pydantic
-  // fields to record.name simultaneously, this is the place to add
-  // a per-field-writer guard back.
   if (record[targetKey] === stringValue) return record;
   return { ...record, [targetKey]: stringValue };
 }

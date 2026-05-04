@@ -4,13 +4,14 @@ import React from 'react';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { IconCamera, IconShield, IconAlert, IconInfo, IconUser, IconMapPin, IconSparkle, IconLock, IconPause } from './icons';
 import { SectionHeader, Chip, Field } from './primitives';
-import type { GuardianData, NameVariant, RecordData } from '../lib/types';
+import type { FamilyMember, GuardianData, NameVariant, RecordData } from '../lib/types';
 
 export type RecordCardProps = {
   record: RecordData;
   minor: boolean | undefined;
   justPopulatedKey: string | null;
   disabled?: boolean;
+  highlightKey?: string | null;
 };
 
 type ExpandedMap = Record<string, boolean>;
@@ -84,6 +85,131 @@ function SubSection({ id, title, icon, meta, children, expandedMap, setExpandedM
   );
 }
 
+// ─── Family network section ──────────────────────────────────────────────────
+
+function statusChip(status: FamilyMember['status']) {
+  if (status === 'WITH_SEARCHER') return <Chip tone="green">With searcher</Chip>;
+  if (status === 'MISSING') return <Chip tone="amber">Missing</Chip>;
+  return null;
+}
+
+function PersonRow({ member, isMinor }: { member: FamilyMember; isMinor: boolean }) {
+  const isRtl = !member.nameLatin || /[؀-ۿݐ-ݿ]/.test(member.name);
+  return (
+    <div className="flex items-baseline gap-2 py-1">
+      <span dir={isRtl ? 'rtl' : undefined} className={`text-[15px] text-ink font-medium ${isRtl ? 'rtl' : ''}`}>
+        {member.name}
+      </span>
+      {member.nameLatin && (
+        <span className="text-[12px] text-muted">{member.nameLatin}</span>
+      )}
+      {member.age !== undefined && (
+        <span className="text-[12px] text-muted">· {member.age}</span>
+      )}
+      {member.relationship && (
+        <span dir={isRtl ? 'rtl' : undefined} className={`text-[12px] text-muted ${isRtl ? 'rtl' : ''}`}>
+          · {member.relationship}
+        </span>
+      )}
+      {isMinor && <Chip tone="amber">Minor</Chip>}
+      {!isMinor && statusChip(member.status)}
+    </div>
+  );
+}
+
+type FamilyNetworkProps = {
+  searcherName: string;
+  searcherNameLatin: string;
+  missingPersons: FamilyMember[];
+  familyRoster: FamilyMember[];
+  expandedMap: ExpandedMap;
+  setExpandedMap: Dispatch<SetStateAction<ExpandedMap>>;
+  highlightKey: string | null;
+};
+
+function FamilyNetworkSection({
+  searcherName,
+  searcherNameLatin,
+  missingPersons,
+  familyRoster,
+  expandedMap,
+  setExpandedMap,
+  highlightKey,
+}: FamilyNetworkProps) {
+  const hasAny = searcherName || missingPersons.length > 0 || familyRoster.length > 0;
+  if (!hasAny) return null;
+
+  const totalCount = (searcherName ? 1 : 0) + missingPersons.length + familyRoster.length;
+  const isHighlighted =
+    highlightKey === 'searcher_name' ||
+    highlightKey === 'searcher_name_transliteration' ||
+    highlightKey === 'missing_persons' ||
+    highlightKey === 'family_roster';
+
+  return (
+    <SubSection
+      id="family_network"
+      title="Family network"
+      icon={<IconUser size={18} />}
+      meta={totalCount > 0 ? <Chip tone="neutral">{totalCount}</Chip> : undefined}
+      expandedMap={expandedMap}
+      setExpandedMap={setExpandedMap}
+      highlight={isHighlighted}
+    >
+      <div className="space-y-3 px-6 pt-1">
+
+        {searcherName && (
+          <div>
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted mb-1">Searcher</div>
+            <div className="flex items-baseline gap-2">
+              <span
+                dir={/[؀-ۿ]/.test(searcherName) ? 'rtl' : undefined}
+                className={`text-[15px] text-ink font-medium ${/[؀-ۿ]/.test(searcherName) ? 'rtl' : ''}`}
+              >
+                {searcherName}
+              </span>
+              {searcherNameLatin && (
+                <span className="text-[12px] text-muted">{searcherNameLatin}</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {missingPersons.length > 0 && (
+          <div>
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted mb-1">
+              Missing persons
+            </div>
+            <div className="space-y-0.5">
+              {missingPersons.map((m, i) => (
+                <PersonRow
+                  key={i}
+                  member={m}
+                  isMinor={typeof m.age === 'number' && m.age > 0 && m.age < 18}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {familyRoster.length > 0 && (
+          <div>
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted mb-1">
+              Roster (with searcher)
+            </div>
+            <div className="space-y-0.5">
+              {familyRoster.map((m, i) => (
+                <PersonRow key={i} member={m} isMinor={false} />
+              ))}
+            </div>
+          </div>
+        )}
+
+      </div>
+    </SubSection>
+  );
+}
+
 function GuardianProtection({ data, minor, expandedMap, setExpandedMap }: GuardianProtectionProps) {
   if (!minor) return null;
   return (
@@ -110,7 +236,7 @@ function GuardianProtection({ data, minor, expandedMap, setExpandedMap }: Guardi
   );
 }
 
-function RecordCard({ record, minor, justPopulatedKey, disabled }: RecordCardProps) {
+function RecordCard({ record, minor, justPopulatedKey, disabled, highlightKey }: RecordCardProps) {
   const [expandedMap, setExpandedMap] = React.useState<ExpandedMap>({});
 
   return (
@@ -165,6 +291,16 @@ function RecordCard({ record, minor, justPopulatedKey, disabled }: RecordCardPro
             <Field label="Spoken language" value={record.language} />
           </div>
         </SubSection>
+
+        <FamilyNetworkSection
+          searcherName={record.searcherName}
+          searcherNameLatin={record.searcherNameLatin}
+          missingPersons={record.missingPersons}
+          familyRoster={record.familyRoster}
+          expandedMap={expandedMap}
+          setExpandedMap={setExpandedMap}
+          highlightKey={highlightKey ?? null}
+        />
 
         <GuardianProtection
           data={record.guardian || {}}

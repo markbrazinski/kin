@@ -36,9 +36,12 @@ vi.mock('./hooks/useEventStream', () => ({
     state: {
       record: {
         name: '', age: '', relationship: '',
-        lastSeenLocation: '', lastSeenLocationSource: 'speaker' as const,
-        lastSeenDate: '', physicalDesc: '',
-        guardian: { name: '', relationship: '', contact: '' },
+        nameVariants: null, nameNative: null, nameNativeRtl: false,
+        language: '', lastSeenLocation: '', lastSeenLocationSource: 'speaker' as const,
+        lastSeenLocationRtl: false, lastSeenDate: '', circumstance: '',
+        physicalDesc: '', features: '',
+        guardian: { guardianPresent: '', cpConsent: '', cmKnown: '', referralStatus: '' },
+        searcherName: '', searcherNameLatin: '', missingPersons: [], familyRoster: [],
       },
       auditEvents: mockAuditEvents,
       structlogEvents: [],

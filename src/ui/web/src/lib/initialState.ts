@@ -23,4 +23,8 @@ export const INITIAL_RECORD: RecordData = {
     cmKnown: '',
     referralStatus: '',
   },
+  searcherName: '',
+  searcherNameLatin: '',
+  missingPersons: [],
+  familyRoster: [],
 };
