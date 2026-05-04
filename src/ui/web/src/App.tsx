@@ -1074,9 +1074,10 @@ function App() {
                 <RecordCard
                   record={{
                     ...record,
-                    recordId: streamState.intakeId ?? undefined,
-                    capturedAt: streamState.capturedAt ?? undefined,
-                    syncStatus: 'local',
+                    // SSE path wins when available; demo-path setRecord patches are the fallback
+                    recordId: streamState.intakeId ?? record.recordId,
+                    capturedAt: streamState.capturedAt ?? record.capturedAt,
+                    syncStatus: record.syncStatus ?? 'local',
                   }}
                   minor={minor}
                   justPopulatedKey={justPopulated}
