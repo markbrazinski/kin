@@ -80,17 +80,20 @@ const YUSUF_DEMO_STEPS: DemoStep[] = [
   { at: 4000,
     populateRaw: { searcherName: "يوسف العمر", searcherNameLatin: "Yusuf Al-Omar" },
     trace: { name: "extract_intake_fields", args: { searcher_name: "يوسف العمر" }, result: "ok" } },
-  // Missing persons — Mariam first
+  // Missing persons — Mariam first (with partial per-person attrs — intake was in progress)
   { at: 5200,
     populateRaw: { missingPersons: [
-      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING" },
+      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING",
+        lastSeen: "البوابة الجنوبية · Southern gate" },
     ]},
     trace: { name: "extract_intake_fields", args: { missing_persons: "[مريم, 32, sister]" }, result: "ok" } },
-  // Missing persons — add Mohamad (flag_minor fires here)
+  // Missing persons — add Mohamad (flag_minor fires here); crisis interrupts before marks captured
   { at: 6400,
     populateRaw: { missingPersons: [
-      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING" },
-      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن أخت", status: "MISSING" },
+      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING",
+        lastSeen: "البوابة الجنوبية · Southern gate" },
+      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن أخت", status: "MISSING",
+        lastSeen: "البوابة الجنوبية · Southern gate" },
     ]},
     trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
   // Roster — Aisha with searcher
@@ -963,6 +966,14 @@ function App() {
              timerRunning ? timerSec * 1000 : 0);
     setPhase("ready");
     refetchQueue();
+    // Trigger network match sequence after save — same path as DemoDock "Simulate match"
+    setTimeout(() => {
+      setNetworkMatchResult(DEFAULT_NETWORK_RESULT);
+      setView("match");
+      setMatchPhase("split");
+      setTimeout(() => setMatchPhase("linking"), 400);
+      setTimeout(() => setMatchPhase("merged"), 3400);
+    }, 800);
   };
 
   const onSimulateCrisis = () => {
