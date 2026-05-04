@@ -40,6 +40,12 @@ type GuardianProtectionProps = {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function formatRecordId(uuid: string | undefined): string {
+  if (!uuid) return '—';
+  const tail = uuid.slice(-4);
+  return `KIN-2026-${tail.padStart(4, '0').toUpperCase()}`;
+}
+
 function formatCapturedAt(iso: string | undefined): string {
   if (!iso) return '—';
   try {
@@ -87,7 +93,7 @@ function MetadataStrip({ record }: { record: RecordData }) {
       <div className="flex-1 min-w-0">
         <div className="text-[12px] uppercase tracking-wider text-muted">Record</div>
         <div className="font-mono text-[15px] text-ink mt-0.5 truncate">
-          {record.recordId ?? '—'}
+          {formatRecordId(record.recordId)}
         </div>
       </div>
       {/* CAPTURED */}

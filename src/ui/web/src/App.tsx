@@ -5,13 +5,13 @@ import {
   IconMic, IconLock, IconLanguages, IconInfo,
   IconArrowRight, IconPlay, IconAlert, IconRotate, IconLink, IconX,
 } from './components/icons';
-import { Button, Waveform, CompletenessMeter } from './components/primitives';
+import { Button, Waveform } from './components/primitives';
+import { ChicletRibbon } from './components/ChicletRibbon';
 import { RecordCard } from './components/RecordCard';
 import { CrisisReferralCard, TransliterationMatch } from './components/CrisisAndTranslit';
 import { NetworkMatch, DEFAULT_NETWORK_RESULT } from './components/NetworkMatch';
 import { TracePanel } from './components/DevTrace';
 import type {
-  CompletenessSegment,
   Language,
   MatchPhase,
   NetworkMatchResult,
@@ -772,21 +772,20 @@ function App() {
     : phase === "done" ? "Intake complete · queued for sync" : "Active intake";
   const statusTone: StatusTone = minor && !guardianFilled ? "amber" : phase === "done" ? "green" : "green";
 
-  const segments: CompletenessSegment[] = [
-    { key: "name", label: "Name", filled: !!record.name },
-    { key: "age",  label: "Age",  filled: !!record.age },
-    { key: "rel",  label: "Relationship", filled: !!record.relationship },
-    { key: "ls",   label: "Last seen", filled: !!(record.lastSeenLocation && record.lastSeenDate) },
-    { key: "marks",label: "Marks", filled: !!(record.physicalDesc && record.features) },
-    ...(minor ? [{ key: "guard", label: "Guardian/CP", filled: !!guardianFilled }] : []),
-  ];
-
   // ----- Demo sequencer
   const runDemo = () => {
     // schedule steps relative to wall clock
     demoStartRef.current = performance.now();
     setPhase("recording");
     setTimerRunning(true);
+    // v1.1 cleanup: inject via synthetic intake_created event once useEventStream exposes dispatch
+    setRecord(prev => ({
+      ...prev,
+      recordId: '00000000-0000-0000-0000-000000000147',
+      capturedAt: new Date().toISOString(),
+      syncStatus: 'queued' as const,
+      language: 'Spanish (Latin America)',
+    }));
     logCall({ name: "session.start", args: { session_id: 147 }, result: "ok" }, 0);
 
     DEMO_STEPS.forEach((step) => {
@@ -877,6 +876,14 @@ function App() {
     setPhase("recording");
     setTimerRunning(true);
     setSpeakerLanguage("ar");
+    // v1.1 cleanup: inject via synthetic intake_created event once useEventStream exposes dispatch
+    setRecord(prev => ({
+      ...prev,
+      recordId: '00000000-0000-0000-0000-000000000042',
+      capturedAt: new Date().toISOString(),
+      syncStatus: 'queued' as const,
+      language: 'Arabic (Levantine)',
+    }));
     logCall({ name: "session.start", args: { session_id: 42 }, result: "ok" }, 0);
 
     runSteps(YUSUF_DEMO_STEPS);
@@ -899,6 +906,14 @@ function App() {
     setPhase("recording");
     setTimerRunning(true);
     setSpeakerLanguage("ar");
+    // v1.1 cleanup: inject via synthetic intake_created event once useEventStream exposes dispatch
+    setRecord(prev => ({
+      ...prev,
+      recordId: '00000000-0000-0000-0000-000000000049',
+      capturedAt: new Date().toISOString(),
+      syncStatus: 'queued' as const,
+      language: 'Arabic (Levantine)',
+    }));
     logCall({ name: "session.start", args: { session_id: 49 }, result: "ok" }, 0);
 
     runSteps(MARIAM_DEMO_STEPS);
@@ -1027,9 +1042,15 @@ function App() {
                   />
                 </div>
 
-                {/* Completeness meter */}
-                <div className="mb-4 px-1">
-                  <CompletenessMeter segments={segments} />
+                {/* Chiclet ribbon — family-network completeness (S19) */}
+                <div className="mb-4">
+                  <ChicletRibbon
+                    searcherName={record.searcherName}
+                    missingPersonsCount={record.missingPersons.length}
+                    detailedCount={record.missingPersons.filter(
+                      m => !!m.lastSeen || (m.marks && m.marks.length > 0)
+                    ).length}
+                  />
                 </div>
 
                 {/* Save button — above card, top-right (S19) */}
