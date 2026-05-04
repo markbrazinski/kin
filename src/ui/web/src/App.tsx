@@ -58,6 +58,9 @@ type DemoStep = {
   populate?: keyof RecordData;
   value?: string;
   lastSeenLocationSource?: string;
+  // For array fields (missingPersons, familyRoster) and non-string scalars
+  // (searcherName) that need to bypass the string-only populate path:
+  populateRaw?: Partial<RecordData>;
   trace?: TraceCallInput;
 };
 
@@ -65,25 +68,78 @@ type DemoStep = {
 // Each step mutates the record object. The sequencer runs these in order against
 // a wall clock to simulate SSE streaming into React state.
 
-// Yusuf fixture script — Arabic intake that ends in crisis escalation.
-// Mirrors DEMO_STEPS shape; crisis fires after the last populate step.
+// Yusuf al-Saleh — Arabic intake ending in crisis escalation.
+// Searcher: Yusuf (35). Missing: sister Mariam (32) + nephew Mohamad (8).
+// Roster: wife Aisha (32, WITH_SEARCHER). crisis fires after last step.
 const YUSUF_DEMO_STEPS: DemoStep[] = [
-  { at: 1000, state: "recording",  trace: { name: "audio_stream.open",  args: { lang_hint: "ar" } } },
-  { at: 3000, state: "processing", trace: { name: "asr.transcribe",      args: { chunks: 5 }, result: "stream_complete" } },
-  { at: 4200, populate: "name",    value: "مريم العمر",
-              trace: { name: "extract_name", args: { text: "…أبحث عن زوجتي مريم العمر…" }, result: "مريم العمر" } },
-  { at: 5400, populate: "relationship", value: "زوجة",
-              trace: { name: "extract_relationship", args: {}, result: "spouse" } },
-  { at: 6400, populate: "age",     value: "28",
-              trace: { name: "extract_age", args: {}, result: 28 } },
-  { at: 7200, populate: "lastSeenLocation", value: "Syria–Lebanon border",
-              lastSeenLocationSource: "الحدود السورية اللبنانية",
-              trace: { name: "extract_location", args: {}, result: "SY–LB border" } },
-  { at: 8000, populate: "lastSeenDate", value: "3 days ago",
-              trace: { name: "normalize_date", args: { input: "قبل ثلاثة أيام" }, result: "-3d" } },
-  { at: 8800, populate: "circumstance", value: "Separated at border crossing during crowd movement",
-              trace: { name: "extract_circumstance", args: {} } },
-  // After this last step the sequencer fires escalate_crisis (see runYusufDemo)
+  { at: 1000, state: "recording",
+    trace: { name: "audio_stream.open", args: { lang_hint: "ar" } } },
+  { at: 3000, state: "processing",
+    trace: { name: "asr.transcribe", args: { chunks: 5 }, result: "stream_complete" } },
+  // Searcher identity
+  { at: 4000,
+    populateRaw: { searcherName: "يوسف العمر", searcherNameLatin: "Yusuf Al-Omar" },
+    trace: { name: "extract_intake_fields", args: { searcher_name: "يوسف العمر" }, result: "ok" } },
+  // Missing persons — Mariam first
+  { at: 5200,
+    populateRaw: { missingPersons: [
+      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING" },
+    ]},
+    trace: { name: "extract_intake_fields", args: { missing_persons: "[مريم, 32, sister]" }, result: "ok" } },
+  // Missing persons — add Mohamad (flag_minor fires here)
+  { at: 6400,
+    populateRaw: { missingPersons: [
+      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING" },
+      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن أخت", status: "MISSING" },
+    ]},
+    trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
+  // Roster — Aisha with searcher
+  { at: 7400,
+    populateRaw: { familyRoster: [
+      { name: "عائشة", nameLatin: "Aisha", age: 32, relationship: "زوجة", status: "WITH_SEARCHER" },
+    ]},
+    trace: { name: "extract_intake_fields", args: { family_roster: "[عائشة, wife, WITH_SEARCHER]" }, result: "ok" } },
+  // Last seen
+  { at: 8200, populate: "lastSeenLocation", value: "Southern gate — camp perimeter",
+    lastSeenLocationSource: "البوابة الجنوبية",
+    trace: { name: "extract_location", args: {}, result: "southern_gate" } },
+  { at: 8900, populate: "lastSeenDate", value: "3 days ago",
+    trace: { name: "normalize_date", args: { input: "قبل ثلاثة أيام" }, result: "-3d" } },
+  // crisis fires after this step — see runYusufDemo
+];
+
+// Mariam al-Saleh — Arabic intake, complete, no crisis.
+// Searcher: Mariam (32). Missing: brother Yusuf (35) + son Mohamad (8).
+// Roster: empty (no one with her).
+const MARIAM_DEMO_STEPS: DemoStep[] = [
+  { at: 1000, state: "recording",
+    trace: { name: "audio_stream.open", args: { lang_hint: "ar" } } },
+  { at: 3000, state: "processing",
+    trace: { name: "asr.transcribe", args: { chunks: 4 }, result: "stream_complete" } },
+  // Searcher identity
+  { at: 4000,
+    populateRaw: { searcherName: "مريم صالح", searcherNameLatin: "Mariam Saleh" },
+    trace: { name: "extract_intake_fields", args: { searcher_name: "مريم صالح" }, result: "ok" } },
+  // Missing — Yusuf (brother)
+  { at: 5200,
+    populateRaw: { missingPersons: [
+      { name: "يوسف", nameLatin: "Yusuf", age: 35, relationship: "أخ", status: "MISSING" },
+    ]},
+    trace: { name: "extract_intake_fields", args: { missing_persons: "[يوسف, 35, brother]" }, result: "ok" } },
+  // Missing — Mohamad (son, minor)
+  { at: 6400,
+    populateRaw: { missingPersons: [
+      { name: "يوسف", nameLatin: "Yusuf", age: 35, relationship: "أخ", status: "MISSING" },
+      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن", status: "MISSING" },
+    ]},
+    trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
+  // Last seen
+  { at: 7400, populate: "lastSeenLocation", value: "Southern gate — camp perimeter",
+    lastSeenLocationSource: "البوابة الجنوبية",
+    trace: { name: "extract_location", args: {}, result: "southern_gate" } },
+  { at: 8100, populate: "lastSeenDate", value: "3 days ago",
+    trace: { name: "normalize_date", args: { input: "قبل ثلاثة أيام" }, result: "-3d" } },
+  // ends at phase="done" — Save button activates (see runMariam)
 ];
 
 const DEMO_STEPS: DemoStep[] = [
@@ -448,9 +504,10 @@ type DemoDockProps = {
   phase: Phase;
   view: View;
   onRunYusufDemo: () => void;
+  onRunMariam: () => void;
 };
 
-function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis, onSplit, onClose, phase, view, onRunYusufDemo }: DemoDockProps) {
+function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis, onSplit, onClose, phase, view, onRunYusufDemo, onRunMariam }: DemoDockProps) {
   if (!visible) return null;
 
   const demoReady = phase === "ready" && view === "single";
@@ -498,17 +555,15 @@ function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis
           Reset
         </Button>
       </div>
-      {/* Fixtures — recording-day fallback: runs Yusuf Arabic intake then fires crisis */}
+      {/* Fixtures — recording-day fallback sequencers */}
       <div className="mt-2.5 pt-2 border-t border-hair">
         <div className="text-[10px] font-medium uppercase tracking-wider text-muted/60 mb-1.5">Fixtures</div>
         <div className="flex flex-wrap gap-1.5">
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={!demoReady}
-            onClick={onRunYusufDemo}
-          >
+          <Button size="sm" variant="ghost" disabled={!demoReady} onClick={onRunYusufDemo}>
             Run Yusuf intake
+          </Button>
+          <Button size="sm" variant="ghost" disabled={!demoReady} onClick={onRunMariam}>
+            Run Mariam intake
           </Button>
         </div>
       </div>
@@ -570,7 +625,7 @@ function App() {
   const callIdRef = useRef(0);
 
   // Queue records — fetched on view=queue mount; drives rail badge count
-  const { records: queueRecords } = useQueueRecords(view === 'queue');
+  const { records: queueRecords, refetch: refetchQueue } = useQueueRecords(view === 'queue');
 
   // Presentation mode — ⌘⇧P or ?present=1
   const { presentationActive, setPresentationActive, hudHidden, setHudHidden } =
@@ -807,14 +862,10 @@ function App() {
     resetStream();
   };
 
-  const runYusufDemo = () => {
-    demoStartRef.current = performance.now();
-    setPhase("recording");
-    setTimerRunning(true);
-    setSpeakerLanguage("ar");
-    logCall({ name: "session.start", args: { session_id: 42 }, result: "ok" }, 0);
-
-    YUSUF_DEMO_STEPS.forEach((step) => {
+  // Shared step executor for both Yusuf and Mariam sequencers.
+  // Handles scalar `populate` steps and raw `populateRaw` patch steps.
+  const runSteps = (steps: DemoStep[]) => {
+    steps.forEach((step) => {
       setTimeout(() => {
         const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
         if (step.state) setPhase(step.state);
@@ -823,23 +874,36 @@ function App() {
           const value = step.value;
           setRecord(prev => {
             const next = { ...prev, [populateKey]: value };
-            if (step.lastSeenLocationSource) {
-              next.lastSeenLocationSource = step.lastSeenLocationSource;
-            }
+            if (step.lastSeenLocationSource) next.lastSeenLocationSource = step.lastSeenLocationSource;
             return next;
           });
           setJustPopulated(populateKey);
           setTimeout(() => setJustPopulated(j => j === populateKey ? null : j), 2500);
         }
+        if (step.populateRaw) {
+          const patch = step.populateRaw;
+          setRecord(prev => ({ ...prev, ...patch }));
+          // Use the first key in the patch as the highlight key
+          const firstKey = Object.keys(patch)[0];
+          if (firstKey) {
+            setJustPopulated(firstKey);
+            setTimeout(() => setJustPopulated(j => j === firstKey ? null : j), 2500);
+          }
+        }
         if (step.trace) logCall(step.trace, t);
       }, step.at);
     });
+  };
 
-    // After last field: fire crisis card. Phase stays "done" while the
-    // card is open. The crisis card's onResolved/onDeEscalated handlers
-    // call setCrisisOpen(false); we hook into that via a separate effect
-    // by setting phase to "ready" immediately — the mic won't activate
-    // until crisisOpen is also false, which the close handler ensures.
+  const runYusufDemo = () => {
+    demoStartRef.current = performance.now();
+    setPhase("recording");
+    setTimerRunning(true);
+    setSpeakerLanguage("ar");
+    logCall({ name: "session.start", args: { session_id: 42 }, result: "ok" }, 0);
+
+    runSteps(YUSUF_DEMO_STEPS);
+
     const lastAt = YUSUF_DEMO_STEPS[YUSUF_DEMO_STEPS.length - 1].at;
     setTimeout(() => {
       const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
@@ -847,11 +911,29 @@ function App() {
                 args: { signal: "distress_keyword", lang: "ar" },
                 result: "referral_card_elevated" }, t);
       setCrisisOpen(true);
-      // Set ready now — crisis overlay is still visible, so the mic is
-      // not accessible. Once the caseworker dismisses the card
-      // (onResolved / onDeEscalated sets crisisOpen=false) the app is
-      // immediately live for Mariam's intake with no extra reset needed.
       setPhase("ready");
+      refetchQueue();
+    }, lastAt + 600);
+  };
+
+  const runMariam = () => {
+    onReset();
+    demoStartRef.current = performance.now();
+    setPhase("recording");
+    setTimerRunning(true);
+    setSpeakerLanguage("ar");
+    logCall({ name: "session.start", args: { session_id: 49 }, result: "ok" }, 0);
+
+    runSteps(MARIAM_DEMO_STEPS);
+
+    const lastAt = MARIAM_DEMO_STEPS[MARIAM_DEMO_STEPS.length - 1].at;
+    setTimeout(() => {
+      const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
+      logCall({ name: "submit_record",
+                args: { status: "complete" },
+                result: "queued_local" }, t);
+      setPhase("done");
+      refetchQueue();
     }, lastAt + 600);
   };
 
@@ -880,6 +962,15 @@ function App() {
     setMatchPhase("split");
     setTimeout(() => setMatchPhase("linking"), 400);
     setTimeout(() => setMatchPhase("merged"), 3400);
+  };
+
+  const handleSave = () => {
+    logCall({ name: "submit_record",
+              args: { status: "complete" },
+              result: "queued_local" },
+             timerRunning ? timerSec * 1000 : 0);
+    setPhase("ready");
+    refetchQueue();
   };
 
   const onSimulateCrisis = () => {
@@ -983,6 +1074,18 @@ function App() {
                   <IconLock size={12} />
                   <span>Record stored on this device. Will sync when you next connect to the local hub.</span>
                 </div>
+
+                {phase === 'done' && (
+                  <div className="mt-4 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleSave}
+                      className="px-4 h-9 text-[13px] font-medium rounded-kin bg-green text-white hover:bg-green/90 transition-colors"
+                    >
+                      Save record
+                    </button>
+                  </div>
+                )}
               </>
             )}
 
@@ -1010,6 +1113,8 @@ function App() {
                     timerSec={timerSec}
                     timerRunning={timerRunning}
                     crisisOpen={crisisOpen}
+                    phase={phase}
+                    onSave={handleSave}
                   />
                   <IntakePanel
                     sourceDeviceId="tent_b"
@@ -1020,6 +1125,8 @@ function App() {
                     timerSec={timerSec}
                     timerRunning={timerRunning}
                     crisisOpen={crisisOpen}
+                    phase={phase}
+                    onSave={handleSave}
                   />
                 </div>
               </>
@@ -1108,6 +1215,7 @@ function App() {
           phase={phase}
           view={view}
           onRunYusufDemo={runYusufDemo}
+          onRunMariam={runMariam}
         />
       )}
       {!demoDockVisible && !presentationActive && (

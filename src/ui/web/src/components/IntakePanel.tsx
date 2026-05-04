@@ -57,6 +57,9 @@ export type IntakePanelProps = {
   /* Optional fallback record for offline (runDemo) mode in single-panel. */
   fallbackRecord?: RecordData;
   fallbackJustPopulated?: string | null;
+  /* S13: Save button — shown when phase is "done". */
+  phase?: string;
+  onSave?: () => void;
 };
 
 const ACCENT_BY_TENT: Record<Tent, 'primary' | 'amber'> = {
@@ -81,6 +84,8 @@ export function IntakePanel({
   eventSourceFactory,
   fallbackRecord,
   fallbackJustPopulated = null,
+  phase,
+  onSave,
 }: IntakePanelProps) {
   const { state } = useEventStream({
     sourceDeviceId,
@@ -219,6 +224,19 @@ export function IntakePanel({
           Record stored on this device. Will sync when you next connect to the local hub.
         </span>
       </div>
+
+      {/* S13: Save record — visible only when extraction is complete */}
+      {phase === 'done' && onSave && (
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={onSave}
+            className="px-4 h-9 text-[13px] font-medium rounded-kin bg-green text-white hover:bg-green/90 transition-colors"
+          >
+            Save record
+          </button>
+        </div>
+      )}
 
       {/* Per-panel structlog sidebar — system event log */}
       <div className="mt-4">
