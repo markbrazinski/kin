@@ -136,7 +136,7 @@ describe('useVoicePhase', () => {
     });
     expect(result.current.phase).toBe('extracting');
 
-    // POST resolves paused_for_crisis -> done, isCrisis still true
+    // POST resolves completed -> done, isCrisis still true (set by structlog event)
     rerender({
       ...initial,
       micState: 'idle',
@@ -144,7 +144,7 @@ describe('useVoicePhase', () => {
         structlog('crisis_path_taken'),
         structlog('tool_call_invoked'),
       ],
-      lastPostStatus: 'paused_for_crisis',
+      lastPostStatus: 'completed',
     });
     expect(result.current.phase).toBe('done');
     expect(result.current.isCrisis).toBe(true);

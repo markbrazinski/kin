@@ -5,7 +5,7 @@ import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import structlog
@@ -26,14 +26,15 @@ router = APIRouter()
 class AudioUploadResponse(BaseModel):
     """Response shape for POST /intake/audio.
 
-    `locale_aware_message` is populated only when status is
-    "paused_for_crisis"; it carries Gemma's escalate_crisis short
-    message in the speaker's language for the overlay to render.
+    `locale_aware_message` is populated when is_crisis is True;
+    it carries Gemma's escalate_crisis short message in the speaker's
+    language for the overlay to render.
     Ephemeral — not persisted (ADR-004 REV 2 + REV 3).
     """
 
     intake_id: str
     status: str
+    is_crisis: bool = False
     locale_aware_message: str | None = None
 
 
@@ -139,8 +140,9 @@ async def upload_audio(
     return AudioUploadResponse(
         intake_id=str(record.id),
         status=record.status,
+        is_crisis=record.is_crisis,
         locale_aware_message=(
-            locale_message if record.status == "paused_for_crisis" else None
+            locale_message if record.is_crisis else None
         ),
     )
 
@@ -193,3 +195,39 @@ async def update_transliteration(
         storage=storage,
     )
     return {"intake_id": str(record.id), "changed": True}
+
+
+# ─── Crisis resolution ────────────────────────────────────────────
+
+
+class CrisisResolvedBody(BaseModel):
+    resolution: Literal["referral_provided", "de_escalated"]
+    referral_organization: str | None = None
+
+
+@router.post("/intake/{intake_id}/crisis-resolved")
+async def crisis_resolved(
+    intake_id: UUID,
+    body: CrisisResolvedBody,
+    request: Request,
+) -> dict[str, Any]:
+    """Record how the worker resolved a crisis referral.
+
+    Emits a crisis_resolved audit event so the caseworker review
+    surface can show whether a referral was issued or the situation
+    de-escalated. The intake record itself is unaffected.
+    """
+    storage = getattr(request.app.state, "storage", None)
+    if storage is None:
+        raise HTTPException(status_code=503, detail="pipeline adapters unavailable")
+
+    existing = storage.read_intake_record(intake_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"intake_id {intake_id} not found")
+
+    storage.emit_crisis_resolved(
+        existing.id,
+        resolution=body.resolution,
+        referral_organization=body.referral_organization,
+    )
+    return {"ok": True}

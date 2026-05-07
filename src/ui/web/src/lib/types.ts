@@ -99,6 +99,10 @@ export type NodeMatch = {
   roster_index_b: number | null;
   phonetic_score: number;
   composite_score: number;
+  match_type?: 'primary' | 'supporting';
+  // Optional overrides: when the structural role differs from the display person_type.
+  person_type_a?: 'searcher' | 'missing_person' | 'roster_member';
+  person_type_b?: 'searcher' | 'missing_person' | 'roster_member';
 };
 
 export type NetworkMatchResult = {

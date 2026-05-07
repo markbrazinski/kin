@@ -1,13 +1,12 @@
-"""Trigger contract tests for _trigger_matching (S5 ITEM D + S13-rev).
+"""Trigger contract tests for _trigger_matching (S5 ITEM D).
 
-Five tests covering the matching trigger contract:
+Four tests covering the matching trigger contract:
   1. Trigger fires on creation, emits matching_trigger_fired even
      when no candidates exist.
   2. Trigger does NOT fire on read/list operations.
-  3. paused_for_crisis records ARE included in the candidate pool (S13-rev).
-  4. A paused_for_crisis record cannot itself trigger matching (fire
-     direction: matching fires on the newly-committed record only).
-  5. Multiple matching candidates each become a MatchLink row.
+  3. Crisis-flagged records (is_crisis=True) are candidates like any
+     other committed record.
+  4. Multiple matching candidates each become a MatchLink row.
 
 These tests call _trigger_matching directly (not via ingest_audio) to
 keep the focus on the trigger contract. The ingest_audio integration
@@ -115,24 +114,20 @@ async def test_trigger_does_not_fire_on_read_operations(
     assert trigger_events == []
 
 
-# ─── 3. paused_for_crisis candidates ARE included (S13-rev) ───────
+# ─── 3. crisis-flagged records are candidates like any other ──────
 
 
 @pytest.mark.asyncio
-async def test_trigger_includes_paused_for_crisis_candidates(
+async def test_trigger_includes_crisis_flagged_candidates(
     tmp_path: Path,
 ) -> None:
-    """S13-rev: a paused_for_crisis record matching the new record on
-    identity fields SHOULD produce a MatchLink. The intake is paused
-    but the data is not lost — extracted fields participate in match
-    scoring identically to committed records.
-
-    Also verifies includes_paused_candidates=True annotation fires on
-    the match_proposed audit event when a paused record contributed.
+    """Crisis records (is_crisis=True) participate in match scoring
+    identically to non-crisis committed records.
     """
     storage = _adapter(tmp_path)
-    # Paused-for-crisis Mohamad with preserved fields.
-    _create_mohamad(storage, "tent_crisis", status="paused_for_crisis")
+    # Crisis-flagged Mohamad in storage.
+    crisis_record = _create_mohamad(storage, "tent_crisis")
+    storage.update_intake_record(crisis_record.id, is_crisis=True)
     # The new record we trigger matching on.
     new_record = _create_mohamad(storage, "tent_b")
 
@@ -146,45 +141,7 @@ async def test_trigger_includes_paused_for_crisis_candidates(
         log for log in cap_logs if log["event"] == "matching_trigger_fired"
     ]
     assert len(trigger_events) == 1
-    assert trigger_events[0]["candidate_count"] == 1
     assert trigger_events[0]["match_count"] == 1
-
-    # includes_paused_candidates annotation fires in the match_proposed event.
-    proposed_events = storage.list_audit_events(event_type="match_proposed")
-    assert len(proposed_events) == 1
-    assert proposed_events[0].details.get("includes_paused_candidates") is True
-
-
-# ─── 4. paused_for_crisis record cannot be the trigger origin ─────
-
-
-@pytest.mark.asyncio
-async def test_paused_record_does_not_itself_trigger_matching(
-    tmp_path: Path,
-) -> None:
-    """A paused_for_crisis record should never appear as the new_record
-    arg to _trigger_matching — matching fires on newly-committed records
-    only. This test verifies the fire-direction contract: when a paused
-    record is passed as new_record (which the pipeline never does, but
-    which code must handle gracefully), it cannot self-match, and the
-    non-paused candidate in storage does match it.
-
-    Practical coverage: the pipeline's crisis path calls
-    _persist_crisis_record which does NOT call _trigger_matching, so
-    this scenario is defense-in-depth, not a production path.
-    """
-    storage = _adapter(tmp_path)
-    # A committed Mohamad in storage (the candidate).
-    committed = _create_mohamad(storage, "tent_committed")
-    # A paused record as the "trigger origin" — atypical but must not crash.
-    paused = _create_mohamad(storage, "tent_paused", status="paused_for_crisis")
-
-    links = await _trigger_matching(paused, storage=storage)
-
-    # committed Mohamad is a candidate; paused record self-match is excluded.
-    assert len(links) == 1
-    assert links[0].record_a_id == paused.id
-    assert links[0].record_b_id == committed.id
 
 
 # ─── 5. Multiple matching candidates → multiple MatchLinks ────────

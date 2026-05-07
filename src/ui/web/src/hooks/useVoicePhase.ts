@@ -14,7 +14,7 @@
                    processing -> idle in the same tick, so we cannot
                    drive this phase off mic state)
      extracting  structlog tool_call_invoked arrives
-     done        POST resolves with status (completed or paused_for_crisis)
+     done        POST resolves with status completed
 
    Crisis branch walks through extracting (Gemma's escalate_crisis
    tool_call DOES fire — same event name, same phase advance), then
@@ -39,7 +39,7 @@ export type VoicePhase =
   | 'done'
   | 'saved';
 
-export type PostStatus = 'completed' | 'paused_for_crisis';
+export type PostStatus = 'completed';
 
 export type VoicePhaseInputs = {
   micState: MicState;

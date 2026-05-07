@@ -124,7 +124,6 @@ def test_audit_event_accepts_all_event_types() -> None:
     """Every AuditEventType in the enum constructs cleanly."""
     event_types = [
         "intake_created",
-        "intake_paused",
         "crisis_detected",
         "referral_issued",
         "match_proposed",

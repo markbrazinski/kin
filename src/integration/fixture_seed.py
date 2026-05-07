@@ -1,7 +1,7 @@
 """Demo fixture seeding — deterministic records for rehearsal corpus.
 
 Produces four IntakeRecords with staggered audit timestamps that read
-as captured-live: Yusuf (paused_for_crisis), Mariam (complete), and
+as captured-live: Yusuf (complete, crisis-flagged), Mariam (complete), and
 two ambient queue records (Spanish, Farsi). Canonical seed logic; CLI
 wrapper lives at scripts/seed_demo_fixtures.py; DemoDock POST handler
 lives in src/ui/server/routes/demo.py.
@@ -72,7 +72,7 @@ def _make_clock(base_offset_s: float = 0.0) -> FakeClock:
     return clock
 
 
-# ─── Yusuf — Arabic, paused_for_crisis ───────────────────────────────────────
+# ─── Yusuf — Arabic, complete (crisis-flagged) ───────────────────────────────
 
 # Yusuf's source utterance (Arabic, as Whisper would transcribe)
 _YUSUF_SOURCE = (
@@ -87,7 +87,11 @@ _YUSUF_TRANSLATION = (
 
 
 def seed_yusuf(storage: StorageAdapter) -> IntakeRecord:
-    """Seed Yusuf's paused_for_crisis record with realistic audit history."""
+    """Seed Yusuf's complete record with realistic audit history.
+
+    Crisis fires mid-intake (T+22s); worker handles referral offline
+    then saves (T+25s). Status=complete, is_crisis=True.
+    """
     _remove_fixture(storage, YUSUF_ID)
 
     clock = _make_clock(0.0)
@@ -158,16 +162,19 @@ def seed_yusuf(storage: StorageAdapter) -> IntakeRecord:
             family_roster=[mohamad, aisha],
         )
 
-        # T+22s — crisis detected → paused_for_crisis (triple-emit)
+        # T+22s — crisis detected (UI overlay fires, record stays partial)
         clock.advance_now(5)
         record = storage.update_intake_record(
             record.id,
-            status="paused_for_crisis",
             is_crisis=True,
             crisis_match_path="keyword",
             referral_issued=True,
             referral_organization="ICRC Family Links Network",
         )
+
+        # T+25s — worker handles referral offline, then saves
+        clock.advance_now(3)
+        record = storage.update_intake_record(record.id, status="complete")
 
     finally:
         storage._clock = original_clock

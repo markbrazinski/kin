@@ -152,14 +152,14 @@ export function IntakePanel({
         return;
       }
       try {
-        const resp = await uploadAudioBlob({
+        await uploadAudioBlob({
           blob,
           lang: speakerLanguage,
           sourceDeviceId,
           intakeId: intakeIdRef.current,
         });
         setUploadError(null);
-        setLastPostStatus(resp.status === 'paused_for_crisis' ? 'paused_for_crisis' : 'completed');
+        setLastPostStatus('completed');
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : String(err));
       }

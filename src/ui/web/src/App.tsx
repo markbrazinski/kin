@@ -10,6 +10,7 @@ import { ChicletRibbon } from './components/ChicletRibbon';
 import { RecordCard } from './components/RecordCard';
 import { CrisisReferralCard, TransliterationMatch } from './components/CrisisAndTranslit';
 import { NetworkMatch, DEFAULT_NETWORK_RESULT } from './components/NetworkMatch';
+import type { NetworkCardData } from './components/NetworkMatch';
 import { TracePanel } from './components/DevTrace';
 import type {
   Language,
@@ -21,7 +22,7 @@ import type {
 import { INITIAL_RECORD } from './lib/initialState';
 import { useEventStream } from './hooks/useEventStream';
 import { useMicCapture } from './hooks/useMicCapture';
-import { useVoicePhase, type PostStatus } from './hooks/useVoicePhase';
+import { useVoicePhase, type PostStatus, type VoicePhase } from './hooks/useVoicePhase';
 import { IntakePanel } from './components/IntakePanel';
 import { RailNav, type RailRoute } from './components/RailNav';
 import { QueueView, useQueueRecords } from './components/QueueView';
@@ -35,12 +36,12 @@ import {
   getActiveMatchCount,
   type MatchCandidatesMap,
 } from './state/matchCandidates';
-import { uploadAudioBlob } from './lib/api';
+import { uploadAudioBlob, postCrisisResolved } from './lib/api';
 import { voiceCopy } from './lib/voiceCopy';
 import { dirFor, t } from './lib/i18n';
 import type { AuditEnvelope, StructlogEnvelope } from './lib/sseEnvelope';
 
-type Phase = 'ready' | 'recording' | 'processing' | 'done';
+type Phase = 'ready' | 'recording' | 'processing' | 'extracting' | 'done' | 'saved';
 type View = 'single' | 'split' | 'match' | 'queue';
 type StatusTone = 'green' | 'amber' | 'red';
 
@@ -62,6 +63,9 @@ type DemoStep = {
   // (searcherName) that need to bypass the string-only populate path:
   populateRaw?: Partial<RecordData>;
   trace?: TraceCallInput;
+  // Synthetic structlog event — pushed into demoStructlogEvents so
+  // the TranscriptStrip (and StructlogSidebar) see it during demo playback.
+  structlog?: { event: string; [key: string]: unknown };
 };
 
 // ---------- Demo script ---------------------------------------------------
@@ -74,26 +78,34 @@ type DemoStep = {
 const YUSUF_DEMO_STEPS: DemoStep[] = [
   { at: 1000, state: "recording",
     trace: { name: "audio_stream.open", args: { lang_hint: "ar" } } },
+  { at: 2200,
+    structlog: { event: "transcription_chunk",
+      source: "أنا يوسف العمر، عمري واحد وأربعون سنة. أبحث عن أختي مريم، عمرها اثنان وثلاثون سنة، وابن أختي محمد، عمره ثماني سنوات. معي زوجتي عائشة. آخر مرة رأيتهم كانت عند البوابة الجنوبية في المخيم، قبل ثلاثة أيام، وقت ازدحام شديد عند نقطة التفتيش. مريم طويلة، شعرها داكن على الكتفين، وعندها شامة صغيرة على خدها الأيمن. محمد قصير القامة وعنده ندبة فوق حاجبه الأيسر.",
+      translation: "I am Yusuf Al-Omar, I am forty-one years old. I am looking for my sister Mariam, thirty-two years old, and my nephew Mohamad, eight years old. My wife Aisha is with me. The last time I saw them was at the southern gate of the camp, three days ago, during a severe crowd surge at the checkpoint. Mariam is tall with dark shoulder-length hair and a small mole on her right cheek. Mohamad is short with a scar above his left eyebrow." } },
   { at: 3000, state: "processing",
     trace: { name: "asr.transcribe", args: { chunks: 5 }, result: "stream_complete" } },
+  { at: 4000, state: "extracting" as Phase },
   // Searcher identity
   { at: 4000,
     populateRaw: { searcherName: "يوسف العمر", searcherNameLatin: "Yusuf Al-Omar" },
     trace: { name: "extract_intake_fields", args: { searcher_name: "يوسف العمر" }, result: "ok" } },
-  // Missing persons — Mariam first (with partial per-person attrs — intake was in progress)
+  // Missing persons — Mariam first
   { at: 5200,
     populateRaw: { missingPersons: [
       { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING",
-        lastSeen: "البوابة الجنوبية · Southern gate" },
+        lastSeen: "البوابة الجنوبية · Southern gate",
+        marks: ["شامة صغيرة على الخد الأيمن · small mole right cheek"] },
     ]},
     trace: { name: "extract_intake_fields", args: { missing_persons: "[مريم, 32, sister]" }, result: "ok" } },
-  // Missing persons — add Mohamad (flag_minor fires here); crisis interrupts before marks captured
+  // Missing persons — add Mohamad (flag_minor fires here)
   { at: 6400,
     populateRaw: { missingPersons: [
       { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING",
-        lastSeen: "البوابة الجنوبية · Southern gate" },
+        lastSeen: "البوابة الجنوبية · Southern gate",
+        marks: ["شامة صغيرة على الخد الأيمن · small mole right cheek"] },
       { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن أخت", status: "MISSING",
-        lastSeen: "البوابة الجنوبية · Southern gate" },
+        lastSeen: "البوابة الجنوبية · Southern gate",
+        marks: ["ندبة فوق الحاجب الأيسر · scar above left brow"] },
     ]},
     trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
   // Roster — Aisha with searcher
@@ -108,6 +120,10 @@ const YUSUF_DEMO_STEPS: DemoStep[] = [
     trace: { name: "extract_location", args: {}, result: "southern_gate" } },
   { at: 8900, populate: "lastSeenDate", value: "3 days ago",
     trace: { name: "normalize_date", args: { input: "قبل ثلاثة أيام" }, result: "-3d" } },
+  { at: 9400, populate: "circumstance", value: "Separated during crowd surge at the southern gate checkpoint",
+    trace: { name: "extract_circumstance", args: {} } },
+  { at: 9900, populate: "physicalDesc", value: "Mariam: approx. 165 cm, dark hair shoulder length · Mohamad: approx. 120 cm, short hair",
+    trace: { name: "extract_distinguishing_marks", args: {} } },
   // crisis fires after this step — see runYusufDemo
 ];
 
@@ -117,8 +133,13 @@ const YUSUF_DEMO_STEPS: DemoStep[] = [
 const MARIAM_DEMO_STEPS: DemoStep[] = [
   { at: 1000, state: "recording",
     trace: { name: "audio_stream.open", args: { lang_hint: "ar" } } },
+  { at: 2200,
+    structlog: { event: "transcription_chunk",
+      source: "أنا مريم صالح، عمري ثمانية وثلاثون سنة. أبحث عن زوجي يوسف، عمره خمسة وثلاثون سنة، وابني محمد، عمره ثماني سنوات. فُقدنا قبل ثلاثة أيام عند البوابة الجنوبية في المخيم وقت ازدحام شديد. يوسف أصلع جزئياً. محمد عنده وحمة على خده الأيسر.",
+      translation: "I am Mariam Saleh, I am thirty-eight years old. I am looking for my husband Yusuf, thirty-five years old, and my son Mohamad, eight years old. We were separated three days ago at the southern gate of the camp during a severe crowd surge. Yusuf has partial baldness. Mohamad has a birthmark on his left cheek." } },
   { at: 3000, state: "processing",
     trace: { name: "asr.transcribe", args: { chunks: 4 }, result: "stream_complete" } },
+  { at: 4000, state: "extracting" as Phase },
   // Searcher identity
   { at: 4000,
     populateRaw: { searcherName: "مريم صالح", searcherNameLatin: "Mariam Saleh" },
@@ -196,7 +217,7 @@ function TopBar({ sessionLabel, statusLabel, statusTone, speakerLanguage, setSpe
 
         {/* Session label */}
         <div className="hidden lg:flex items-center gap-3 ml-2">
-          <div className="text-[13px] text-muted">Session <span className="font-mono text-ink">#147</span></div>
+          <div className="text-[13px] text-muted">{sessionLabel}</div>
           <div className="h-4 w-px bg-hair" />
           <div className="flex items-center gap-1.5">
             <span className={`w-1.5 h-1.5 rounded-full ${statusTone === "amber" ? "bg-amber" : statusTone === "red" ? "bg-red" : "bg-green"}`} />
@@ -238,6 +259,73 @@ function TopBar({ sessionLabel, statusLabel, statusTone, speakerLanguage, setSpe
   );
 }
 
+// ---------- Transcript strip ─────────────────────────────────────────────
+
+type TranscriptChunk = {
+  source: string;       // source-language utterance (Arabic, Spanish, etc.)
+  translation: string;  // worker-language translation (always English in v1)
+  at: string;           // ISO 8601 timestamp from the envelope
+};
+
+function extractTranscriptChunks(events: StructlogEnvelope[]): TranscriptChunk[] {
+  return events
+    .filter(e => e.payload.event === 'transcription_chunk')
+    .map(e => ({
+      source:      String(e.payload.source      ?? ''),
+      translation: String(e.payload.translation ?? ''),
+      at: e.at,
+    }));
+}
+
+type TranscriptStripProps = {
+  structlogEvents: StructlogEnvelope[];
+  isSaved: boolean;
+};
+
+function TranscriptStrip({ structlogEvents, isSaved }: TranscriptStripProps) {
+  const chunks = extractTranscriptChunks(structlogEvents);
+
+  if (chunks.length === 0) {
+    return (
+      <div className="mt-3 pt-3 border-t border-hair">
+        <div className="text-[10.5px] font-medium uppercase tracking-wider text-muted mb-1.5">
+          Transcript
+        </div>
+        <div className="text-[12px] text-muted/70 italic">
+          Transcript will appear as speech is detected
+        </div>
+      </div>
+    );
+  }
+
+  const label = isSaved
+    ? `TRANSCRIPT · ${chunks.length} utterance${chunks.length !== 1 ? 's' : ''}`
+    : 'TRANSCRIPT';
+
+  // Newest-first (consistent with S26-A ordering).
+  const displayed = chunks.slice().reverse();
+
+  return (
+    <div className="mt-3 pt-3 border-t border-hair">
+      <div className="text-[10.5px] font-medium uppercase tracking-wider text-muted mb-1.5">
+        {label}
+      </div>
+      <div className="overflow-y-auto space-y-2.5" style={{ maxHeight: 180 }}>
+        {displayed.map((chunk, i) => (
+          <div key={`${chunk.at}-${i}`}>
+            <div className="text-[13px] text-ink leading-snug" dir="auto">
+              {chunk.source}
+            </div>
+            <div className="text-[12px] text-muted/70 leading-snug mt-0.5">
+              {chunk.translation}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---------- Voice-note affordance ----------------------------------------
 export type VoicePanelProps = {
   /* Bundle 1.5 S6 split: workerLanguage drives chrome (caption,
@@ -254,11 +342,18 @@ export type VoicePanelProps = {
      to advance through transcribing -> extracting -> done. */
   auditEvents: AuditEnvelope[];
   structlogEvents: StructlogEnvelope[];
-  /* Fires when /intake/audio responds with status=paused_for_crisis.
+  /* Fires when /intake/audio responds with is_crisis=true.
      Carries Gemma's locale_aware_message (or null on tool_call
      fallback). App opens the overlay and clears intakeId in one
      state-setter chain — see ADR-004 REV 3. */
   onCrisisResponse?: (message: string | null) => void;
+  /* Demo sequencer display override — pure visual, does not affect the
+     real useVoicePhase machine or mic capture. When undefined, the real
+     internal phase governs (live intake path). */
+  demoPhase?: VoicePhase;
+  /* Called when Begin is pressed while displayPhase === 'saved',
+     so the demo sequencer can reset App's phase back to 'ready'. */
+  onBeginNewIntake?: () => void;
 };
 
 export function VoicePanel({
@@ -270,6 +365,8 @@ export function VoicePanel({
   auditEvents,
   structlogEvents,
   onCrisisResponse,
+  demoPhase,
+  onBeginNewIntake,
 }: VoicePanelProps) {
   const intakeIdRef = useRef<string | null>(intakeId);
   intakeIdRef.current = intakeId;
@@ -289,11 +386,9 @@ export function VoicePanel({
           intakeId: intakeIdRef.current,
         });
         setUploadError(null);
-        if (resp.status === 'paused_for_crisis') {
-          setLastPostStatus('paused_for_crisis');
+        setLastPostStatus('completed');
+        if (resp.is_crisis) {
           onCrisisResponseRef.current?.(resp.locale_aware_message ?? null);
-        } else {
-          setLastPostStatus('completed');
         }
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : String(err));
@@ -308,31 +403,40 @@ export function VoicePanel({
     lastPostStatus,
   });
 
+  // Demo display override — pure visual, does not affect real phase machine
+  const displayPhase: VoicePhase = demoPhase ?? phase;
+
   const waveState =
-    phase === 'recording' ? 'recording' :
-    phase === 'transcribing' || phase === 'extracting' ? 'processing' :
+    displayPhase === 'recording' ? 'recording' :
+    displayPhase === 'transcribing' || displayPhase === 'extracting' ? 'processing' :
     'idle';
 
   /* S6 chrome split: caption + Begin/Stop button labels are operator
      chrome and read workerLanguage. The ready-copy paragraph (below)
      is the speaker-facing greeting and reads speakerLanguage; its
      dir attribute follows speakerLanguage too. */
-  const caption = voiceCopy[phase].en;
-  const beginLabel = t('voice.begin', workerLanguage);
+  const caption = voiceCopy[displayPhase].en;
   const stopLabel = t('voice.stop', workerLanguage);
   const speakerRtl = dirFor(speakerLanguage) === 'rtl';
 
-  const showBegin = phase === 'ready' || phase === 'done';
-  const showStop = phase === 'recording' || phase === 'transcribing' || phase === 'extracting';
+  const showBegin = displayPhase === 'ready' || displayPhase === 'done' || displayPhase === 'saved';
+  const showStop = displayPhase === 'recording' || displayPhase === 'transcribing' || displayPhase === 'extracting';
+  const beginLabel = displayPhase === 'saved' ? 'Begin new intake' : t('voice.begin', workerLanguage);
 
   /* Mic-icon chrome cycles per design ref nav-app.jsx:144-149. */
   const micIconCls =
-    phase === 'recording' ? 'border-red/40 text-red bg-red-soft' :
-    phase === 'transcribing' || phase === 'extracting' ? 'border-line text-primary bg-primary-soft' :
-    phase === 'awaiting' ? 'border-primary/30 text-primary bg-primary-soft' :
+    displayPhase === 'recording' ? 'border-red/40 text-red bg-red-soft' :
+    displayPhase === 'transcribing' || displayPhase === 'extracting' ? 'border-line text-primary bg-primary-soft' :
+    displayPhase === 'awaiting' ? 'border-primary/30 text-primary bg-primary-soft' :
     'border-line text-ink';
 
   const handleBegin = () => {
+    // "Begin new intake" in saved phase: navigate to fresh ready state.
+    // Do NOT start recording — worker presses Begin again when ready.
+    if (displayPhase === 'saved') {
+      onBeginNewIntake?.();
+      return;
+    }
     phaseBegin();
     setLastPostStatus(null);
     void start();
@@ -392,6 +496,12 @@ export function VoicePanel({
               </Button>
             )}
           </div>
+        )}
+        {displayPhase !== 'ready' && (
+          <TranscriptStrip
+            structlogEvents={structlogEvents}
+            isSaved={displayPhase === 'saved'}
+          />
         )}
       </div>
     </div>
@@ -580,6 +690,10 @@ function App() {
   const [view, setView]                       = useState<View>("single");
   const [matchPhase, setMatchPhase]           = useState<MatchPhase>("split");
   const [networkMatchResult, setNetworkMatchResult] = useState<NetworkMatchResult | null>(null);
+  const [demoStructlogEvents, setDemoStructlogEvents] = useState<StructlogEnvelope[]>([]);
+  // Stores the record from the previous completed intake so the match graph
+  // can show real node data (Side A) when two live intakes produce a match.
+  const [prevRecord, setPrevRecord] = useState<RecordData | null>(null);
   /* Bundle 1.5 S6: speakerLanguage drives Whisper/Gemma/safety/
      referral; workerLanguage drives UI chrome. workerLanguage is a
      const in v1 (no Settings UI yet); v1.1 will lift it to useState
@@ -767,6 +881,16 @@ function App() {
     return () => clearInterval(t);
   }, [timerRunning]);
 
+  // Maps App Phase to VoicePhase for the demo display override on VoicePanel
+  const voicePhasemap: Record<Phase, VoicePhase> = {
+    ready:      'ready',
+    recording:  'recording',
+    processing: 'transcribing',
+    extracting: 'extracting',
+    done:       'done',
+    saved:      'saved',
+  };
+
   // ----- Derived state
   const minor = !!record.age && parseInt(record.age, 10) > 0 && parseInt(record.age, 10) < 18;
   const guardianFilled = minor && Object.values(record.guardian).every(v => !!v && v.trim() !== "");
@@ -821,6 +945,41 @@ function App() {
     }, lastAt + 600);
   };
 
+  // Maps a completed RecordData to the NetworkCardData shape consumed by
+  // the match graph. Side A = the saved record from the previous intake.
+  const toNetworkCard = (r: RecordData, tone: 'warm' | 'cool'): NetworkCardData => ({
+    title: r.recordId ? `Session ${r.recordId.slice(0, 8)}` : 'Intake',
+    tone,
+    speakerLanguage: (r.language?.toLowerCase().startsWith('ar') ? 'ar'
+                    : r.language?.toLowerCase().startsWith('fa') ? 'fa'
+                    : r.language?.toLowerCase().startsWith('es') ? 'es'
+                    : 'en') as Language,
+    searcherName: r.searcherName || undefined,
+    searcherNameLatin: r.searcherNameLatin || undefined,
+    missingName: r.missingPersons[0]?.name ?? r.name,
+    missingNameLatin: r.missingPersons[0]?.nameLatin,
+    missingAge: r.missingPersons[0]?.age,
+    missingRelationship: r.missingPersons[0]?.relationship,
+    age: r.missingPersons[0]?.age?.toString() ?? r.age,
+    lastSeen: r.lastSeenLocationSource || r.lastSeenLocation,
+    lastSeenLatin: r.lastSeenLocationSource ? r.lastSeenLocation : undefined,
+    missingPersons: r.missingPersons.map(mp => ({
+      name: mp.name,
+      nameLatin: mp.nameLatin,
+      relationship: mp.relationship,
+      age: mp.age,
+    })),
+    rosterMembers: r.familyRoster.map(fm => ({
+      name: fm.name,
+      nameLatin: fm.nameLatin,
+      relationship: fm.relationship,
+      status: fm.status === 'WITH_SEARCHER' ? 'present'
+            : fm.status === 'MISSING' ? 'missing'
+            : 'known',
+      age: fm.age,
+    })),
+  });
+
   const onReset = () => {
     // Reset clears App-level demo state (record/phase/calls/timer)
     // but leaves view mode untouched. Switching view here would
@@ -835,6 +994,8 @@ function App() {
     setCalls([]);
     setJustPopulated(null);
     setNetworkMatchResult(null);
+    setDemoStructlogEvents([]);
+    setPrevRecord(null);
     // Clear SSE reducer state too — without this, intakeId stays
     // pinned to the previous turn's record id and the next mic turn
     // POSTs as an extend (HTTP 500 on crisis-after-Reset).
@@ -870,6 +1031,15 @@ function App() {
           }
         }
         if (step.trace) logCall(step.trace, t);
+        if (step.structlog) {
+          const payload = step.structlog;
+          setDemoStructlogEvents(prev => [...prev, {
+            type: 'structlog_event' as const,
+            at: new Date().toISOString(),
+            source_device_id: null,
+            payload: { ...payload },
+          }]);
+        }
       }, step.at);
     });
   };
@@ -898,7 +1068,7 @@ function App() {
                 args: { signal: "distress_keyword", lang: "ar" },
                 result: "referral_card_elevated" }, t);
       setCrisisOpen(true);
-      setPhase("ready");
+      setPhase("done");
       refetchQueue();
     }, lastAt + 600);
   };
@@ -917,6 +1087,14 @@ function App() {
       syncStatus: 'queued' as const,
       language: 'Arabic (Levantine)',
     }));
+    // Synthesize match candidate so activeMatchCount > 0 when Save fires
+    setMatchCandidates(prev => applyMatchProposed(
+      prev,
+      '00000000-0000-0000-0000-000000000049',
+      1,
+      ['00000000-0000-0000-0000-000000000049', '00000000-0000-0000-0000-000000000042'],
+      new Date().toISOString(),
+    ));
     logCall({ name: "session.start", args: { session_id: 49 }, result: "ok" }, 0);
 
     runSteps(MARIAM_DEMO_STEPS);
@@ -964,16 +1142,13 @@ function App() {
               args: { status: "complete" },
               result: "queued_local" },
              timerRunning ? timerSec * 1000 : 0);
-    setPhase("ready");
     refetchQueue();
-    // Trigger network match sequence after save — same path as DemoDock "Simulate match"
-    setTimeout(() => {
-      setNetworkMatchResult(DEFAULT_NETWORK_RESULT);
-      setView("match");
-      setMatchPhase("split");
-      setTimeout(() => setMatchPhase("linking"), 400);
-      setTimeout(() => setMatchPhase("merged"), 3400);
-    }, 800);
+    setPhase('saved');
+    // Snapshot current record as Side A for the match graph — the next
+    // intake's record becomes Side B when a match is confirmed.
+    setPrevRecord(record);
+    // No auto-route. If activeMatchCount > 0 the queue rail badge
+    // lights up; worker clicks the badge to navigate to match view.
   };
 
   const onSimulateCrisis = () => {
@@ -986,7 +1161,9 @@ function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <TopBar
-        sessionLabel="Session #147 — Active intake"
+        sessionLabel={streamState.intakeId
+          ? `Session ${streamState.intakeId.slice(0, 8)}…`
+          : 'Session —'}
         statusLabel={statusLabel}
         statusTone={statusTone}
         speakerLanguage={speakerLanguage}
@@ -1002,9 +1179,21 @@ function App() {
         <RailNav
           route={view === 'queue' ? 'queue' : 'intake'}
           setRoute={(next: RailRoute) => {
-            setView(next === 'queue' ? 'queue' : 'single');
+            if (next === 'intake' && activeMatchCount > 0) {
+              // Match candidate pending — intake badge click goes to match view.
+              // Use the live networkMatchResult from SSE if available; fall back
+              // to the demo fixture only when no live result has been received.
+              if (!networkMatchResult) setNetworkMatchResult(DEFAULT_NETWORK_RESULT);
+              setView('match');
+              setMatchPhase('split');
+              setTimeout(() => setMatchPhase('linking'), 400);
+              setTimeout(() => setMatchPhase('merged'), 3400);
+            } else {
+              setView(next === 'queue' ? 'queue' : 'single');
+            }
           }}
           queuedCount={queueRecords.length}
+          pendingMatchCount={activeMatchCount || undefined}
         />
 
         {/* MAIN COLUMN */}
@@ -1039,7 +1228,7 @@ function App() {
                     sourceDeviceId="laptop"
                     intakeId={streamState.intakeId}
                     auditEvents={streamState.auditEvents}
-                    structlogEvents={streamState.structlogEvents}
+                    structlogEvents={[...streamState.structlogEvents, ...demoStructlogEvents]}
                     onCrisisResponse={(msg) => {
                       // Gap 1+2+3 in one chain: open overlay with
                       // Gemma's locale_aware_message, clear cached
@@ -1050,8 +1239,36 @@ function App() {
                       setCrisisOpen(true);
                       clearIntakeId();
                     }}
+                    demoPhase={phase !== 'ready' ? voicePhasemap[phase] : undefined}
+                    onBeginNewIntake={() => { onReset(); }}
                   />
                 </div>
+
+                {/* Match-ready banner — visible after save when a candidate is pending */}
+                {phase === 'saved' && activeMatchCount > 0 && (
+                  <div className="mb-5 flex items-center gap-3 px-4 py-3 bg-green-soft border border-green/30 rounded-kin-lg">
+                    <span className="w-2 h-2 rounded-full bg-green shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[13px] font-medium text-ink">Match candidate found</span>
+                      <span className="text-[13px] text-muted ml-2">
+                        {activeMatchCount} record{activeMatchCount > 1 ? 's' : ''} in queue may be related
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!networkMatchResult) setNetworkMatchResult(DEFAULT_NETWORK_RESULT);
+                        setView('match');
+                        setMatchPhase('split');
+                        setTimeout(() => setMatchPhase('linking'), 400);
+                        setTimeout(() => setMatchPhase('merged'), 3400);
+                      }}
+                      className="shrink-0 px-3 h-8 text-[12px] font-medium rounded-kin bg-white border border-green/40 text-[oklch(0.38_0.1_155)] hover:bg-green-soft transition-colors"
+                    >
+                      Review match →
+                    </button>
+                  </div>
+                )}
 
                 {/* Chiclet ribbon — family-network completeness (S19) */}
                 <div className="mb-4">
@@ -1150,8 +1367,13 @@ function App() {
                 ? <NetworkMatch
                     phase={matchPhase}
                     onBack={() => setView("single")}
+                    onNewIntake={() => { onReset(); setView("single"); }}
                     workerLanguage={workerLanguage}
                     networkResult={networkMatchResult}
+                    recordA={prevRecord ? toNetworkCard(prevRecord, 'warm') : undefined}
+                    recordB={toNetworkCard(record, 'cool')}
+                    intakeIdA={prevRecord?.recordId}
+                    intakeIdB={record.recordId}
                   />
                 : <TransliterationMatch
                     phase={matchPhase}
@@ -1204,12 +1426,25 @@ function App() {
             setCrisisMessage(null);
             logCall({ name: "crisis.resolve", args: { outcome: "referral_provided" } },
                     timerRunning ? timerSec * 1000 : 0);
+            if (streamState.intakeId) {
+              void postCrisisResolved({
+                intakeId: streamState.intakeId,
+                resolution: 'referral_provided',
+                referralOrganization: 'ICRC Family Links Network',
+              });
+            }
           }}
           onDeEscalated={() => {
             setCrisisOpen(false);
             setCrisisMessage(null);
             logCall({ name: "crisis.resolve", args: { outcome: "de_escalated" } },
                     timerRunning ? timerSec * 1000 : 0);
+            if (streamState.intakeId) {
+              void postCrisisResolved({
+                intakeId: streamState.intakeId,
+                resolution: 'de_escalated',
+              });
+            }
           }}
         />
       )}

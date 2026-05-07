@@ -97,6 +97,25 @@ body {
 }
 .kin-strip-in { animation: kin-strip-in 280ms cubic-bezier(.2,.7,.3,1) both; }
 
+/* V3 network graph — edge draw (bezier path dashoffset) */
+@keyframes kin-edge-draw {
+  from { stroke-dashoffset: var(--path-len, 1200); opacity: 0; }
+  40%  { opacity: 1; }
+  to   { stroke-dashoffset: 0; opacity: 1; }
+}
+.kin-edge-draw {
+  animation: kin-edge-draw 600ms ease-out forwards;
+}
+
+/* V3 network graph — primary node fill cross-fade to green-soft on merged */
+@keyframes kin-node-fill {
+  from { fill: #fff; }
+  to   { fill: oklch(0.96 0.03 155); }
+}
+.kin-node-fill-primary {
+  animation: kin-node-fill 300ms ease-out forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .kin-rise,
   .kin-link-draw,
@@ -107,7 +126,9 @@ body {
   .kin-badge-tick,
   .kin-flash-highlight,
   .kin-panel-slide-in,
-  .kin-strip-in {
+  .kin-strip-in,
+  .kin-edge-draw,
+  .kin-node-fill-primary {
     animation: none !important;
   }
   /* Preserve auditability semantics: static tint replaces animation

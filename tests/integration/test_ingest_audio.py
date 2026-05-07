@@ -190,7 +190,7 @@ async def test_ingest_audio_crisis_path_arabic_skips_extraction(
         storage=storage,
     )
 
-    assert record.status == "paused_for_crisis"
+    assert record.status == "partial"
     assert record.is_crisis is True
     assert record.crisis_match_path == "keyword"
     assert record.referral_issued is True
@@ -206,16 +206,15 @@ async def test_ingest_audio_crisis_path_arabic_skips_extraction(
     tool_names = {t["function"]["name"] for t in tools}
     assert tool_names == {"escalate_crisis"}
 
-    # Audit events ordered: created → triple-emit → field_extracted ×N.
+    # Audit events ordered: created → crisis dual-emit → field_extracted ×N.
     event_types = [e.event_type for e in storage.list_audit_events()]
     assert event_types[0] == "intake_created"
-    assert event_types[1] == "intake_paused"
-    assert event_types[2] == "crisis_detected"
-    assert event_types[3] == "referral_issued"
+    assert event_types[1] == "crisis_detected"
+    assert event_types[2] == "referral_issued"
     # Remainder are field_extracted for is_crisis, crisis_match_path,
     # referral_issued, referral_organization.
-    assert all(et == "field_extracted" for et in event_types[4:])
-    assert len(event_types[4:]) == 4
+    assert all(et == "field_extracted" for et in event_types[3:])
+    assert len(event_types[3:]) == 4
 
 
 # ─── 3. Partial status when relationship missing ──────────────────
@@ -506,7 +505,7 @@ async def test_ingest_audio_crisis_path_uses_gemma_referral(
     # Gemma override populated; NOT the static lookup
     # ("ICRC Family Links Network" for es).
     assert record.referral_organization == "Cruz Roja"
-    assert record.status == "paused_for_crisis"
+    assert record.status == "partial"
     assert record.is_crisis is True
     assert record.crisis_match_path == "keyword"  # classifier still decided
     assert record.referral_issued is True
@@ -552,16 +551,15 @@ async def test_ingest_audio_crisis_path_falls_back_to_static_lookup(
 
     # Static fallback for es is "ICRC Family Links Network".
     assert record.referral_organization == "ICRC Family Links Network"
-    assert record.status == "paused_for_crisis"
+    assert record.status == "partial"
     assert record.is_crisis is True
     assert record.referral_issued is True
 
-    # Audit triple still emitted in order.
+    # Audit dual-emit in order.
     event_types = [e.event_type for e in storage.list_audit_events()]
     assert event_types[0] == "intake_created"
-    assert event_types[1] == "intake_paused"
-    assert event_types[2] == "crisis_detected"
-    assert event_types[3] == "referral_issued"
+    assert event_types[1] == "crisis_detected"
+    assert event_types[2] == "referral_issued"
 
 
 @pytest.mark.asyncio
@@ -673,8 +671,7 @@ async def test_status_transition_events_omit_utterance_fields(
     # Status-only update — no utterance kwargs.
     storage.update_intake_record(record.id, status="complete")
 
-    # The triple-emit events (intake_paused etc.) and any field_extracted
-    # events on the status transition must not carry utterance fields.
+    # Status-change field_extracted events must not carry utterance fields.
     for event in storage.list_audit_events():
         assert "source_utterance" not in event.details
         assert "whisper_translation" not in event.details

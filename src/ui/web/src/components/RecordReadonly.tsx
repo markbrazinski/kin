@@ -44,7 +44,7 @@ function toRecordData(r: IntakeRecord): RecordData {
 // ---- Status banner ----------------------------------------------------------
 
 function StatusBanner({ status, isCrisis }: { status: IntakeRecord['status']; isCrisis: boolean }) {
-  if (isCrisis || status === 'paused_for_crisis') {
+  if (isCrisis) {
     return (
       <div className="mb-3 bg-red-soft border border-red/30 rounded-kin px-4 py-3 text-[13px] text-ink">
         Crisis referral issued — intake locked. Caseworker review required.

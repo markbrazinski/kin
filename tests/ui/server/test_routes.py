@@ -5,9 +5,8 @@ were superseded in Bundle 1 S1 by the merged-stream contract; see
 test_sse.py for the SSE event-shape coverage.
 
 The /intake/audio test (S6-fix2 / ADR-004 REV 3) covers the response-shape
-contract on the crisis branch: status="paused_for_crisis" must surface
-Gemma's locale_aware_message; non-crisis branches must return
-locale_aware_message=null. The full pipeline is monkey-patched out —
+contract on the crisis branch: is_crisis=True must surface Gemma's
+locale_aware_message; non-crisis branches must return locale_aware_message=null. The full pipeline is monkey-patched out —
 this is a route-layer contract test, not an integration test.
 """
 from __future__ import annotations
@@ -32,8 +31,8 @@ def test_healthz_returns_200() -> None:
     assert r.json() == {"status": "ok"}
 
 
-def _make_record(*, status: str, language: str = "ar") -> IntakeRecord:
-    """Minimal IntakeRecord with the fields the route reads (id, status)."""
+def _make_record(*, status: str, language: str = "ar", is_crisis: bool = False) -> IntakeRecord:
+    """Minimal IntakeRecord with the fields the route reads (id, status, is_crisis)."""
     now = datetime.now(timezone.utc)
     return IntakeRecord(
         id=uuid4(),
@@ -42,18 +41,19 @@ def _make_record(*, status: str, language: str = "ar") -> IntakeRecord:
         language=language,  # type: ignore[arg-type]
         source_device_id="tent_b",
         status=status,  # type: ignore[arg-type]
+        is_crisis=is_crisis,
     )
 
 
 def test_upload_audio_response_shape_crisis_and_non_crisis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Route surfaces locale_aware_message only when status=paused_for_crisis.
+    """Route surfaces locale_aware_message only when is_crisis=True.
 
     Both branches exercised in one test — the negative (non-crisis →
     null) is the same contract from the other side.
     """
-    crisis_record = _make_record(status="paused_for_crisis", language="ar")
+    crisis_record = _make_record(status="partial", language="ar", is_crisis=True)
     happy_record = _make_record(status="complete", language="es")
 
     next_return: list[tuple[IntakeRecord, str | None]] = [
@@ -93,7 +93,8 @@ def test_upload_audio_response_shape_crisis_and_non_crisis(
     )
     assert r1.status_code == 200, r1.text
     body1 = r1.json()
-    assert body1["status"] == "paused_for_crisis"
+    assert body1["status"] == "partial"
+    assert body1["is_crisis"] is True
     assert body1["intake_id"] == str(crisis_record.id)
     assert body1["locale_aware_message"] == "يرجى الاتصال بالرقم الموحد"
 

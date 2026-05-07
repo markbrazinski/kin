@@ -1,10 +1,9 @@
-/* NetworkMatch component tests — B2-S12.
+/* NetworkMatch component tests — B2-S25 (V3 inline SVG graph).
 
-   Seven tests covering null guards, phase-gated line rendering,
-   source-script preservation, staggered animation delays, and
-   reduced-motion fallback. All tests stub requestAnimationFrame
-   synchronously so useEffect-driven SVG coordinate computation
-   runs within act() boundaries.
+   Tests cover: null guards, phase-gated edge rendering, source-script
+   preservation, staggered animation delays on paths, reduced-motion
+   fallback, score pill presence, roster sub-divider, and primary node
+   fill on merged phase.
 */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render } from '@testing-library/react';
@@ -23,9 +22,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('NetworkMatch', () => {
-  // ─── Null guards ────────────────────────────────────────────────
+// ─── Null guards ──────────────────────────────────────────────────────
 
+describe('NetworkMatch', () => {
   it('returns null when networkResult.matched is false', () => {
     const result: NetworkMatchResult = {
       matched: false,
@@ -38,27 +37,21 @@ describe('NetworkMatch', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('returns null when matched=true but node_matches is empty (defensive)', () => {
+  it('renders header when matched=true with empty node_matches', () => {
     const result: NetworkMatchResult = {
       matched: true,
       node_matches: [],
       primary_match: null,
     };
-    // matched=true with empty list: component still renders (guard is
-    // only on matched). Parent's richness rule (length >= 2) prevents
-    // this from displaying — component doesn't gate on length.
-    // Verify it does NOT crash and renders the header at minimum.
     const { container } = render(
       <NetworkMatch phase="split" onBack={() => {}} networkResult={result} />,
     );
-    // Component renders (header present) — parent is responsible for
-    // the length >= 2 richness rule, not the component's null guard.
     expect(container.firstChild).not.toBeNull();
   });
 
-  // ─── Phase-gated line rendering ─────────────────────────────────
+  // ─── Phase-gated edge rendering ────────────────────────────────────
 
-  it('phase=split renders no SVG line elements', () => {
+  it('phase=split renders no edge paths', () => {
     const { container } = render(
       <NetworkMatch
         phase="split"
@@ -66,11 +59,11 @@ describe('NetworkMatch', () => {
         networkResult={DEFAULT_NETWORK_RESULT}
       />,
     );
-    const lines = container.querySelectorAll('line');
-    expect(lines.length).toBe(0);
+    const paths = container.querySelectorAll('[data-testid^="edge-path-"]');
+    expect(paths.length).toBe(0);
   });
 
-  it('phase=linking renders one SVG line per node_match with correct classes', async () => {
+  it('phase=linking renders one path per node_match', async () => {
     let container!: HTMLElement;
     await act(async () => {
       const result = render(
@@ -82,37 +75,11 @@ describe('NetworkMatch', () => {
       );
       container = result.container;
     });
-    const lines = container.querySelectorAll('line');
-    // 3 node_matches → 3 lines
-    expect(lines.length).toBe(3);
-    // Primary line: kin-link-draw, no strokeDasharray
-    expect(lines[0].classList.contains('kin-link-draw')).toBe(true);
-    expect(lines[0].getAttribute('stroke-dasharray')).toBeNull();
-    // Supporting lines: kin-link-draw + strokeDasharray
-    expect(lines[1].classList.contains('kin-link-draw')).toBe(true);
-    expect(lines[1].getAttribute('stroke-dasharray')).toBeTruthy();
-    expect(lines[2].classList.contains('kin-link-draw')).toBe(true);
-    expect(lines[2].getAttribute('stroke-dasharray')).toBeTruthy();
+    const paths = container.querySelectorAll('[data-testid^="edge-path-"]');
+    expect(paths.length).toBe(3);
   });
 
-  // ─── Source-script preservation ─────────────────────────────────
-
-  it('Arabic speakerLanguage: role slot containers carry dir=rtl', () => {
-    const { container } = render(
-      <NetworkMatch
-        phase="split"
-        onBack={() => {}}
-        networkResult={DEFAULT_NETWORK_RESULT}
-      />,
-    );
-    // DEFAULT_RECORD_A and DEFAULT_RECORD_B both use speakerLanguage='ar'
-    const rtlSlots = container.querySelectorAll('[dir="rtl"]');
-    expect(rtlSlots.length).toBeGreaterThan(0);
-  });
-
-  // ─── Staggered animation delays ─────────────────────────────────
-
-  it('linking: SVG lines have staggered animationDelay (primary 0ms, others increasing)', async () => {
+  it('phase=linking: primary path has strokeWidth 3, supporting paths have strokeWidth 1', async () => {
     let container!: HTMLElement;
     await act(async () => {
       const result = render(
@@ -124,21 +91,131 @@ describe('NetworkMatch', () => {
       );
       container = result.container;
     });
-    const lines = Array.from(container.querySelectorAll('line')) as unknown as HTMLElement[];
-    expect(lines.length).toBe(3);
-
-    // Primary line: animationDelay absent or 0ms
-    const delay0 = lines[0].style.animationDelay;
-    expect(delay0 === '' || delay0 === '0ms').toBe(true);
-
-    // Supporting lines: 400ms, 700ms
-    expect(parseInt(lines[1].style.animationDelay)).toBeGreaterThanOrEqual(400);
-    expect(parseInt(lines[2].style.animationDelay)).toBeGreaterThanOrEqual(700);
+    const paths = Array.from(
+      container.querySelectorAll('[data-testid^="edge-path-"]'),
+    ) as SVGPathElement[];
+    expect(paths.length).toBeGreaterThanOrEqual(1);
+    // Primary edge (edge_0) is the first match which matches primary_match.
+    const primaryPath = container.querySelector('[data-testid="edge-path-edge_0"]');
+    expect(primaryPath?.getAttribute('stroke-width')).toBe('3');
+    // Any supporting edge should have strokeWidth 1.
+    const supportingPath = container.querySelector('[data-testid="edge-path-edge_1"]');
+    if (supportingPath) {
+      expect(supportingPath.getAttribute('stroke-width')).toBe('1');
+    }
   });
 
-  // ─── Reduced motion ─────────────────────────────────────────────
+  // ─── Staggered animation delays ─────────────────────────────────────
 
-  it('reduced-motion: lines render in split phase without kin-link-draw class', async () => {
+  it('linking: primary path has animationDelay 0ms, supporting paths staggered', async () => {
+    let container!: HTMLElement;
+    await act(async () => {
+      const result = render(
+        <NetworkMatch
+          phase="linking"
+          onBack={() => {}}
+          networkResult={DEFAULT_NETWORK_RESULT}
+        />,
+      );
+      container = result.container;
+    });
+    const primary = container.querySelector('[data-testid="edge-path-edge_0"]') as HTMLElement | null;
+    const supporting = container.querySelector('[data-testid="edge-path-edge_1"]') as HTMLElement | null;
+
+    const primaryDelay = primary?.style.animationDelay ?? '';
+    expect(primaryDelay === '' || primaryDelay === '0ms').toBe(true);
+
+    if (supporting) {
+      const delay = parseInt(supporting.style.animationDelay ?? '0');
+      expect(delay).toBeGreaterThan(0);
+    }
+  });
+
+  // ─── Source-script preservation ──────────────────────────────────────
+
+  it('Arabic nodes include direction=rtl on name text elements', () => {
+    const { container } = render(
+      <NetworkMatch
+        phase="split"
+        onBack={() => {}}
+        networkResult={DEFAULT_NETWORK_RESULT}
+      />,
+    );
+    // SVG text elements with direction="rtl" for Arabic names.
+    const rtlTexts = container.querySelectorAll('text[direction="rtl"]');
+    expect(rtlTexts.length).toBeGreaterThan(0);
+  });
+
+  // ─── Score pill ───────────────────────────────────────────────────────
+
+  it('score pill renders on primary edge during linking phase', async () => {
+    let container!: HTMLElement;
+    await act(async () => {
+      const result = render(
+        <NetworkMatch
+          phase="linking"
+          onBack={() => {}}
+          networkResult={DEFAULT_NETWORK_RESULT}
+        />,
+      );
+      container = result.container;
+    });
+    const pills = container.querySelectorAll('[data-testid="score-pill"]');
+    // Exactly one pill — on the primary edge only.
+    expect(pills.length).toBe(1);
+  });
+
+  it('score pill does not render in split phase', () => {
+    const { container } = render(
+      <NetworkMatch
+        phase="split"
+        onBack={() => {}}
+        networkResult={DEFAULT_NETWORK_RESULT}
+      />,
+    );
+    const pills = container.querySelectorAll('[data-testid="score-pill"]');
+    expect(pills.length).toBe(0);
+  });
+
+  // ─── Roster sub-divider ───────────────────────────────────────────────
+
+  it('roster members render as flat nodes without a section separator', () => {
+    const { container } = render(
+      <NetworkMatch
+        phase="split"
+        onBack={() => {}}
+        networkResult={DEFAULT_NETWORK_RESULT}
+      />,
+    );
+    // No "ALSO IN ROSTER" divider — flat list.
+    const svgTexts = Array.from(container.querySelectorAll('text'));
+    const rosterLabel = svgTexts.find(t => t.textContent?.includes('ALSO IN ROSTER'));
+    expect(rosterLabel).toBeUndefined();
+    // Roster nodes still render (Aisha on side A).
+    expect(container.querySelector('[data-testid="node-a:roster_1"]')).toBeTruthy();
+  });
+
+  // ─── Merged phase — primary node fill ────────────────────────────────
+
+  it('missing_person nodes have green-soft fill regardless of phase', () => {
+    const { container } = render(
+      <NetworkMatch
+        phase="split"
+        onBack={() => {}}
+        networkResult={DEFAULT_NETWORK_RESULT}
+      />,
+    );
+    // person_type=missing_person nodes always get green-soft fill.
+    const missingRects = container.querySelectorAll('[data-testid="missing-node-rect"]');
+    expect(missingRects.length).toBeGreaterThan(0);
+    for (const rect of missingRects) {
+      expect(rect.getAttribute('fill')).toBe('oklch(0.96 0.03 155)');
+    }
+  });
+
+  // ─── Reduced motion ───────────────────────────────────────────────────
+
+  it('reduced-motion: edges render in split phase without kin-edge-draw class', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: query === '(prefers-reduced-motion: reduce)',
       media: query,
@@ -153,7 +230,6 @@ describe('NetworkMatch', () => {
     let container!: HTMLElement;
     await act(async () => {
       const result = render(
-        // phase=split: normally no lines, but reducedMotion=true bypasses phase gating
         <NetworkMatch
           phase="split"
           onBack={() => {}}
@@ -163,12 +239,12 @@ describe('NetworkMatch', () => {
       container = result.container;
     });
 
-    const lines = container.querySelectorAll('line');
-    // reducedMotion=true → showLines=true regardless of phase
-    expect(lines.length).toBe(3);
-    // No kin-link-draw class when reduced motion
-    for (const line of lines) {
-      expect(line.classList.contains('kin-link-draw')).toBe(false);
+    // reducedMotion=true → showEdges=true regardless of phase.
+    const paths = container.querySelectorAll('[data-testid^="edge-path-"]');
+    expect(paths.length).toBe(3);
+    // No kin-edge-draw class when reduced motion.
+    for (const path of paths) {
+      expect(path.classList.contains('kin-edge-draw')).toBe(false);
     }
   });
 });

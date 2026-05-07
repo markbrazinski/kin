@@ -96,12 +96,9 @@ When `safety_rules.classify(transcription, lang=lang)` returns
 `is_crisis=True`, `ingest_audio` invokes `_persist_crisis_record` and
 returns. No `tool_call` invocation. No `_trigger_matching` call.
 
-Per Part 1 REV 4 §"Required matching trigger behavior" point 5
-(paused_for_crisis records excluded from the candidate pool), this
-also ensures crisis records don't pollute future matching runs — a
-crisis-paused record sitting in storage will be skipped both as the
-new record (it never triggers matching) and as a candidate (it's
-filtered out of the pool).
+Crisis records (is_crisis=True) stay in storage as partial records.
+The worker saves them after handling the referral, at which point they
+become complete and enter normal matching as any other committed record.
 
 The crisis-path identity fields are left empty (per Part 1 §Beat 7
 "whatever Whisper produced"); referral fields are populated from the
@@ -136,8 +133,8 @@ call → one bulk update → one event burst.
 - Single audit-event ordering invariant per ingest path:
   - non-crisis: `intake_created` → `field_extracted ×N` →
     `match_proposed ×0..N` → optional silent status promotion
-  - crisis: `intake_created` → `intake_paused` → `crisis_detected` →
-    `referral_issued` → `field_extracted ×4`
+  - crisis: `intake_created` → `crisis_detected` →
+    `referral_issued` → `field_extracted ×N`
 - Extraction and matching independently testable via stubs; neither
   needs the other to validate.
 - Crisis path is a clean early-return; no defensive guards scattered
@@ -251,7 +248,7 @@ REV 3 adds a **second delivery channel**: `ingest_audio` now returns
 `tuple[IntakeRecord, str | None]` (the optional message is non-None
 only on the crisis branch), and the `/intake/audio` POST handler
 surfaces it on its response model `AudioUploadResponse` when
-`status="paused_for_crisis"`. The frontend overlay
+`is_crisis=True`. The frontend overlay
 (`CrisisReferralCard`) reads the message from the synchronous POST
 response and renders it as the displaced-person-facing body, with
 `CRISIS_COPY[lang].body` as the fallback when no message is
@@ -330,7 +327,7 @@ crisis turn so the next turn takes the create-path, see
 `transcription_pipeline.py:258-266`) is part of the wiring commit,
 not part of this ADR — it preserves S5 lock #4 (crisis path is
 create-only) by ensuring the frontend never POSTs an `intake_id`
-referencing a `paused_for_crisis` record.
+referencing a crisis-flagged record from a prior turn.
 
 ## References
 

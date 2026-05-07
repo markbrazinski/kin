@@ -54,9 +54,8 @@ The SSE backend tails `audit_events.jsonl` and pushes events to the React fronte
 | Event type | When emitted |
 |---|---|
 | `intake_created` | `storage.create_intake_record()` |
-| `intake_paused` | `update_intake_record(status → paused_for_crisis)` |
-| `crisis_detected` | same status transition (triple-emit) |
-| `referral_issued` | same status transition (triple-emit) |
+| `crisis_detected` | `update_intake_record(is_crisis=True)` |
+| `referral_issued` | same update (dual-emit) |
 | `field_extracted` | `update_intake_record(field=value)` per field changed |
 | `match_proposed` | `storage.create_match_link()` |
 | `match_confirmed` | `update_match_link_status(proposed → confirmed)` |
@@ -206,11 +205,10 @@ This is the contract between the SSE backend and the structlog sidebar. Every ev
 | 7 | safety_rules semantic check | "semantic check: match (path=embedding)" line |
 | 7 | `crisis_detected` | Red-highlighted line |
 | 7 | `referral_issued` | "referral: IFRC Family Links Network" line |
-| 7 | `intake_paused` | "session paused: crisis flow" line |
 
 **Two streams feed the sidebar:**
 
-1. **Audit events** from `audit_events.jsonl` (SSE-tailed): `intake_created`, `field_extracted`, `match_proposed`, `match_confirmed`, `match_rejected`, `intake_paused`, `crisis_detected`, `referral_issued`.
+1. **Audit events** from `audit_events.jsonl` (SSE-tailed): `intake_created`, `field_extracted`, `match_proposed`, `match_confirmed`, `match_rejected`, `crisis_detected`, `referral_issued`.
 2. **Structlog events** from in-process logging: `minor_flagged`, `crisis_path_taken`, `matching_trigger_fired`, `tool_call_invoked`, `tool_call_returned`, safety_rules check events.
 
 Bundle 1 must plumb both. The cleanest path is likely a unified SSE endpoint that interleaves both streams in time order, but that's a Bundle 1 planning-gate decision.

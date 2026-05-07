@@ -24,8 +24,17 @@ results/phase_2_5_final/
 results/preprocessed_*/
 tests/fixtures/gemma/captures/
 storage/
+design_references/
 .env
 
 # OS
 .DS_Store
 *.log
+
+# Local runtime artifacts
+storage.bak.*/
+memory/
+
+# Env files
+.env*
+!.env.example

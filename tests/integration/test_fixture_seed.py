@@ -38,7 +38,7 @@ def test_seed_yusuf_status_and_fields(tmp_path: Path) -> None:
     record = seed_yusuf(storage)
 
     assert record.id == YUSUF_ID
-    assert record.status == "paused_for_crisis"
+    assert record.status == "complete"
     assert record.is_crisis is True
     assert record.language == "ar"
     assert record.searcher_name != ""
@@ -75,9 +75,8 @@ def test_seed_mariam_status_and_fields(tmp_path: Path) -> None:
 
 
 def test_match_scoring_yusuf_mariam_produces_node_matches(tmp_path: Path) -> None:
-    """S13-rev: Yusuf is paused_for_crisis but his fields are preserved
-    and participate in match scoring. Mariam's commit should produce at
-    least one NodeMatch (Mohamad-pair as primary).
+    """Yusuf is complete (crisis-flagged) and Mariam is complete.
+    Match scoring should produce at least one NodeMatch (Mohamad-pair as primary).
     """
     storage = _adapter(tmp_path)
     seed_all(storage)

@@ -41,6 +41,7 @@ export type RailNavProps = {
   route: RailRoute;
   setRoute: (route: RailRoute) => void;
   queuedCount?: number;
+  pendingMatchCount?: number;
   syncOk?: boolean;
 };
 
@@ -52,9 +53,9 @@ type RailItem = {
   badge?: number;
 };
 
-export function RailNav({ route, setRoute, queuedCount, syncOk = true }: RailNavProps) {
+export function RailNav({ route, setRoute, queuedCount, pendingMatchCount, syncOk = true }: RailNavProps) {
   const items: RailItem[] = [
-    { key: 'intake', label: 'Intake', icon: <IconMic size={18} />, hot: '⌘1' },
+    { key: 'intake', label: 'Intake', icon: <IconMic size={18} />, hot: '⌘1', badge: pendingMatchCount || undefined },
     { key: 'queue',  label: 'Queue',  icon: <IconList size={18} />, hot: '⌘2', badge: queuedCount },
   ];
 
@@ -73,6 +74,15 @@ export function RailNav({ route, setRoute, queuedCount, syncOk = true }: RailNav
     if (curr > prev) setTickKey((k) => k + 1);
     prevCountRef.current = queuedCount;
   }, [queuedCount]);
+
+  const prevMatchRef = useRef<number | undefined>(pendingMatchCount);
+  const [matchTickKey, setMatchTickKey] = useState(0);
+  useEffect(() => {
+    const prev = prevMatchRef.current ?? 0;
+    const curr = pendingMatchCount ?? 0;
+    if (curr > prev) setMatchTickKey((k) => k + 1);
+    prevMatchRef.current = pendingMatchCount;
+  }, [pendingMatchCount]);
 
   const onKeyDown = useCallback(
     (idx: number) => (e: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -127,7 +137,7 @@ export function RailNav({ route, setRoute, queuedCount, syncOk = true }: RailNav
                 {it.badge ? (
                   <BadgeSpan
                     badge={it.badge}
-                    animateKey={it.key === 'queue' ? tickKey : 0}
+                    animateKey={it.key === 'queue' ? tickKey : matchTickKey}
                   />
                 ) : null}
               </button>

@@ -13,7 +13,7 @@ import { dirFor } from '../lib/i18n';
 type StatusShape = { label: string; tone: 'green' | 'amber' | 'red'; icon: React.ReactElement };
 
 function statusShape(record: IntakeRecord): StatusShape {
-  if (record.is_crisis || record.status === 'paused_for_crisis') {
+  if (record.is_crisis) {
     return { label: 'Crisis', tone: 'red', icon: <IconAlert size={12} /> };
   }
   if (record.is_minor && record.status === 'partial') {

@@ -325,8 +325,8 @@ behavior"):
 2. Produces `MatchLink` rows in `verification_status="proposed"`.
 3. Does NOT auto-confirm.
 4. Does NOT fire on read or list operations.
-5. Excludes `status="paused_for_crisis"` records from the candidate
-   pool. Partial records DO enter the pool.
+5. All records (complete, partial, crisis-flagged) enter the candidate
+   pool. Only self-match is excluded.
 
 **Fan-out shape:** the trigger calls `match_records` once per
 eligible candidate (linear scan of `storage.list_intake_records()`).

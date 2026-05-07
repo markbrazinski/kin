@@ -36,7 +36,7 @@ const PARTIAL_RECORD: IntakeRecord = {
 const CRISIS_RECORD: IntakeRecord = {
   ...COMPLETE_RECORD,
   id: 'aaaaaaaa-0000-0000-0000-000000000003',
-  status: 'paused_for_crisis',
+  status: 'complete',
   is_crisis: true,
   full_name_source_script: 'محمد',
   full_name_transliteration: 'Mohammed',
@@ -79,7 +79,6 @@ describe('QueueView', () => {
   it('Test 2b — QueueRow: crisis record renders crisis chip', () => {
     render(<QueueRow record={CRISIS_RECORD} onOpen={() => {}} />);
     expect(screen.getByText('Crisis')).toBeInTheDocument();
-    // paused_for_crisis status
     expect(screen.getByText('Mohammed')).toBeInTheDocument();
   });
 
@@ -107,7 +106,7 @@ describe('QueueView', () => {
 });
 
 describe('RecordReadonly', () => {
-  it('Test 4 — renders read-only banner and crisis status banner for paused_for_crisis', () => {
+  it('Test 4 — renders read-only banner and crisis status banner for is_crisis=true records', () => {
     render(
       <RecordReadonly
         record={CRISIS_RECORD}

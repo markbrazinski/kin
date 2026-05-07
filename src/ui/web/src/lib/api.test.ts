@@ -12,10 +12,11 @@ describe('uploadAudioBlob', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns locale_aware_message on a paused_for_crisis response', async () => {
+  it('returns locale_aware_message on a crisis response (is_crisis=true)', async () => {
     const fakeResponse = {
       intake_id: 'rec-1',
-      status: 'paused_for_crisis',
+      status: 'partial',
+      is_crisis: true,
       locale_aware_message: 'يرجى الاتصال بالرقم',
     };
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -31,7 +32,8 @@ describe('uploadAudioBlob', () => {
       sourceDeviceId: 'tent_b',
     });
 
-    expect(resp.status).toBe('paused_for_crisis');
+    expect(resp.status).toBe('partial');
+    expect(resp.is_crisis).toBe(true);
     expect(resp.locale_aware_message).toBe('يرجى الاتصال بالرقم');
   });
 

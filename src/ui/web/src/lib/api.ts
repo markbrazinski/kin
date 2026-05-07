@@ -3,6 +3,7 @@
 export type AudioUploadResponse = {
   intake_id: string;
   status: string;
+  is_crisis?: boolean;
   locale_aware_message?: string | null;
 };
 
@@ -32,6 +33,21 @@ export async function uploadAudioBlob(opts: {
     throw new Error(`audio upload failed: ${res.status} ${text}`);
   }
   return (await res.json()) as AudioUploadResponse;
+}
+
+export async function postCrisisResolved(opts: {
+  intakeId: string;
+  resolution: 'referral_provided' | 'de_escalated';
+  referralOrganization?: string;
+}): Promise<void> {
+  await fetch(`/intake/${encodeURIComponent(opts.intakeId)}/crisis-resolved`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      resolution: opts.resolution,
+      referral_organization: opts.referralOrganization ?? null,
+    }),
+  });
 }
 
 export async function postTransliteration(opts: {

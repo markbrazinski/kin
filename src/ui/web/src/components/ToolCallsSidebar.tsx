@@ -4,7 +4,7 @@
    DO NOT CHANGE: tool-calls and structlog are SEPARATE sidebars.
    DO NOT CHANGE: two-state row pattern (started → resolved).
    DO NOT CHANGE: plain mono JSON — no syntax highlighting library. */
-import { useEffect, useRef } from 'react';
+import React from 'react';
 import type { ToolCall } from '../state/toolCalls';
 import { isMergeFlashEvent } from '../lib/mergeFlash';
 
@@ -132,16 +132,9 @@ export type ToolCallsSidebarProps = {
 };
 
 export function ToolCallsSidebar({ calls, className = '' }: ToolCallsSidebarProps) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [calls.length]);
-
   const resolved = calls.filter((c) => c.status !== 'started').length;
   const inFlight = calls.filter((c) => c.status === 'started').length;
+  const reversed = calls.slice().reverse();
 
   return (
     <div
@@ -157,17 +150,15 @@ export function ToolCallsSidebar({ calls, className = '' }: ToolCallsSidebarProp
         <div className="text-[11px] text-muted">function invocations · live</div>
       </div>
 
-      {/* Scroll container — bounded card height matching StructlogSidebar's
-          max-h-44 (176px). Tool-call rows are taller (args + result blocks)
-          so max-h-[280px] gives ~equivalent visible-row count. */}
-      <div ref={scrollRef} className="overflow-y-auto max-h-[280px]">
-        {calls.length === 0 ? (
+      {/* Newest-first — no auto-scroll needed; top of list is always current. */}
+      <div className="overflow-y-auto max-h-[280px]">
+        {reversed.length === 0 ? (
           <div className="px-4 py-5 text-[12px] text-muted leading-relaxed">
             No invocations yet. Tool calls land here as the model decides to use them.
           </div>
         ) : (
-          calls.map((c, i) => (
-            <ToolCallRow key={c.id} call={c} isLatest={i === calls.length - 1} />
+          reversed.map((c, i) => (
+            <ToolCallRow key={c.id} call={c} isLatest={i === 0} />
           ))
         )}
       </div>

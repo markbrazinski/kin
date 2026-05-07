@@ -293,8 +293,8 @@ async def test_ingest_audio_spanish_crisis_smoke(tmp_path: Path) -> None:
     transcribed text (containing the keyword `quiero morir`), the
     crisis branch invokes Gemma's escalate_crisis tool, and the
     locale_aware_message rides back through the tuple return per
-    ADR-004 REV 3. Also locks the spec-mandated triple-emit audit
-    sequence (intake_paused → crisis_detected → referral_issued).
+    ADR-004 REV 3. Also locks the crisis audit dual-emit sequence
+    (crisis_detected → referral_issued).
 
     The locale_aware_message assertion is intentionally STRICT
     (non-None and non-empty). Smoke runs against real Gemma; if
@@ -344,7 +344,8 @@ async def test_ingest_audio_spanish_crisis_smoke(tmp_path: Path) -> None:
 
     # Crisis branch invariants.
     assert record.is_crisis is True
-    assert record.status == "paused_for_crisis"
+    assert record.status == "partial"
+    assert record.is_crisis is True
     assert record.crisis_match_path == "keyword"
     assert record.referral_issued is True
     assert record.referral_organization is not None
@@ -355,11 +356,11 @@ async def test_ingest_audio_spanish_crisis_smoke(tmp_path: Path) -> None:
     assert locale_message is not None
     assert locale_message != ""
 
-    # Spec-mandated audit triple-emit per ADR-004.
+    # Crisis audit dual-emit per ADR-004.
     events = storage.list_audit_events()
     event_types = [e.event_type for e in events]
     assert event_types[0] == "intake_created"
-    assert "intake_paused" in event_types
+    assert "intake_paused" not in event_types
     assert "crisis_detected" in event_types
     assert "referral_issued" in event_types
     # Crisis branch skips field extraction for identity fields.

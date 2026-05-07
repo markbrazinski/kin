@@ -15,9 +15,9 @@
 
 export type AuditEventType =
   | 'intake_created'
-  | 'intake_paused'
   | 'crisis_detected'
   | 'referral_issued'
+  | 'crisis_resolved'
   | 'match_proposed'
   | 'match_confirmed'
   | 'match_rejected'

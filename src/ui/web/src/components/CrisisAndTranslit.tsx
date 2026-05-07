@@ -106,14 +106,36 @@ function CrisisReferralCard({
   const copy = CRISIS_COPY[speakerLanguage] || CRISIS_COPY.en;
   const body = message && message.trim() ? message : copy.body;
   const [playing, setPlaying] = React.useState(false);
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
   const speakerDir = dirFor(speakerLanguage);
   const rtl = speakerDir === "rtl";
 
   React.useEffect(() => {
-    if (!playing) return;
-    const handle = setTimeout(() => setPlaying(false), 3200);
-    return () => clearTimeout(handle);
-  }, [playing]);
+    const audio = new Audio(`/audio/crisis-calm-${speakerLanguage}.mp3`);
+    audio.onended = () => setPlaying(false);
+    audioRef.current = audio;
+    return () => {
+      audio.pause();
+      audioRef.current = null;
+    };
+  }, [speakerLanguage]);
+
+  const handlePlayToggle = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      audio.pause();
+      setPlaying(false);
+    } else {
+      audio.play().catch(() => {
+        // Audio file missing or blocked — fall back to visual-only animation
+        setPlaying(true);
+        const handle = setTimeout(() => setPlaying(false), 3200);
+        return () => clearTimeout(handle);
+      });
+      setPlaying(true);
+    }
+  };
 
   return (
     <div
@@ -149,7 +171,7 @@ function CrisisReferralCard({
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => setPlaying(true)}
+              onClick={handlePlayToggle}
               className="shrink-0 w-12 h-12 rounded-full bg-primary text-white border border-primary hover:bg-primary-2 transition-colors flex items-center justify-center"
               aria-label={copy.play}
             >

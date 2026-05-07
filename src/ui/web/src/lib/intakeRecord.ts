@@ -2,7 +2,7 @@
    Field names and types match the JSON serialization from GET /intake/records.
    UUIDs are serialized as strings; datetimes as ISO 8601 strings. */
 
-export type IntakeStatus = 'complete' | 'partial' | 'paused_for_crisis';
+export type IntakeStatus = 'complete' | 'partial';
 
 export type IntakeRecord = {
   id: string;

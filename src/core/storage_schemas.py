@@ -37,16 +37,16 @@ from core.rfl_schema import FamilyMember
 
 # ─── Type aliases (Literal enums, repo convention) ───────────────
 
-IntakeStatus = Literal["complete", "partial", "paused_for_crisis"]
+IntakeStatus = Literal["complete", "partial"]
 SupportedLanguage = Literal["en", "es", "ar", "fa", "fr", "uk"]
 CrisisMatchPath = Literal["keyword", "semantic"]
 VerificationStatus = Literal["proposed", "confirmed", "rejected"]
 ConfidenceBand = Literal["low", "medium", "high"]
 AuditEventType = Literal[
     "intake_created",
-    "intake_paused",
     "crisis_detected",
     "referral_issued",
+    "crisis_resolved",
     "match_proposed",
     "match_confirmed",
     "match_rejected",

@@ -59,7 +59,8 @@ describe('VoicePanel — crisis wiring (ADR-004 REV 3)', () => {
   it('test #6 — crisis POST response invokes onCrisisResponse with the message', async () => {
     uploadAudioBlobMock.mockResolvedValueOnce({
       intake_id: 'rec-1',
-      status: 'paused_for_crisis',
+      status: 'partial',
+      is_crisis: true,
       locale_aware_message: 'يرجى الاتصال بالرقم',
     });
 
@@ -89,7 +90,8 @@ describe('VoicePanel — crisis wiring (ADR-004 REV 3)', () => {
   it('test #6b — passes null when the response omits locale_aware_message (Gemma fallback)', async () => {
     uploadAudioBlobMock.mockResolvedValueOnce({
       intake_id: 'rec-1',
-      status: 'paused_for_crisis',
+      status: 'partial',
+      is_crisis: true,
       // locale_aware_message intentionally absent (undefined)
     });
 
@@ -122,7 +124,8 @@ describe('VoicePanel — crisis wiring (ADR-004 REV 3)', () => {
     uploadAudioBlobMock
       .mockResolvedValueOnce({
         intake_id: 'rec-1',
-        status: 'paused_for_crisis',
+        status: 'partial',
+        is_crisis: true,
         locale_aware_message: 'msg',
       })
       .mockResolvedValueOnce({

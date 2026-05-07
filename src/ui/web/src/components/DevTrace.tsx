@@ -11,11 +11,7 @@ export type TracePanelProps = {
 };
 
 function TracePanel({ calls, highlightId, onClose }: TracePanelProps) {
-  const ref = React.useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    if (!ref.current) return;
-    ref.current.scrollTop = ref.current.scrollHeight;
-  }, [calls.length]);
+  const reversed = calls.slice().reverse();
 
   return (
     <aside
@@ -35,15 +31,16 @@ function TracePanel({ calls, highlightId, onClose }: TracePanelProps) {
         </button>
       </div>
 
-      <div ref={ref} className="flex-1 overflow-y-auto px-4 py-3 font-mono text-[12.5px]" >
-        {calls.length === 0 && (
+      <div className="flex-1 overflow-y-auto px-4 py-3 font-mono text-[12.5px]">
+        {reversed.length === 0 && (
           <div className="text-muted text-[12px] font-sans leading-relaxed">
             No calls yet. Start the demo sequence or simulate a match to see the trace populate.
           </div>
         )}
         <ol className="space-y-3">
-          {calls.map((c, i) => {
-            const prev = calls[i - 1];
+          {reversed.map((c, i) => {
+            // In reversed order, prior call in time is the next element.
+            const prev = reversed[i + 1];
             const relMs = prev ? c.t - prev.t : 0;
             const highlight = c.id === highlightId;
             return (

@@ -13,7 +13,6 @@
    merge-flash highlight (kin-flash-highlight on matching_trigger_fired /
    matching_retrigger_fired), typographic polish, updated empty-state copy,
    event-count footer. */
-import { useEffect, useRef } from 'react';
 import type { StructlogEnvelope } from '../lib/sseEnvelope';
 import { isMergeFlashEvent } from '../lib/mergeFlash';
 
@@ -71,14 +70,6 @@ export function StructlogSidebar({
   events,
   className = '',
 }: StructlogSidebarProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    /* scrollIntoView may be missing in jsdom-based test environments;
-       optional-chain on the method itself keeps tests green and is a
-       no-op cost in real browsers. */
-    bottomRef.current?.scrollIntoView?.({ block: 'end' });
-  }, [events.length]);
 
   if (events.length === 0) {
     return (
@@ -103,8 +94,9 @@ export function StructlogSidebar({
         Pipeline log
       </div>
       <div className="overflow-y-auto max-h-44 space-y-1.5">
-        {events.map((env, idx) => {
-          const prev = idx > 0 ? events[idx - 1].at : null;
+        {events.slice().reverse().map((env, idx, rev) => {
+          // In reversed order, the prior insertion is the next element.
+          const prev = idx < rev.length - 1 ? rev[idx + 1].at : null;
           const cat = categorize(env.payload.event);
           const flash = isMergeFlashEvent(env.payload.event);
           return (
@@ -133,7 +125,6 @@ export function StructlogSidebar({
             </div>
           );
         })}
-        <div ref={bottomRef} />
       </div>
       <div className="mt-1 font-mono text-[10.5px] text-muted/70 text-right">
         {events.length} event{events.length !== 1 ? 's' : ''}

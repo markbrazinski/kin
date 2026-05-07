@@ -14,8 +14,8 @@ transcription + translation, classifies for crisis content, runs Gemma
 tool-calling extraction (on the SOURCE-language text, matching Apr 28
 hello-world + Apr 29 multilang sweep probe conditions), and persists
 the result as an IntakeRecord with auto-emitted audit events. Crisis
-inputs skip extraction entirely and route to a paused_for_crisis
-record with a hardcoded referral.
+inputs skip extraction entirely and route to crisis handling — the
+record stays partial and the worker saves after handling the referral.
 
 ingest_audio emits all field_extracted events at once after a single
 tool_call (one bulk update). Beat 5 turn-by-turn appearance is the
@@ -415,10 +415,9 @@ def _persist_crisis_record(
     storage: StorageAdapter,
     referral_organization: str | None = None,
 ) -> IntakeRecord:
-    """Crisis-path persistence: create partial then update to
-    paused_for_crisis to trigger the spec-mandated triple-emit
-    (intake_paused → crisis_detected → referral_issued) plus
-    field_extracted events for the crisis fields.
+    """Crisis-path persistence: create a partial record and set is_crisis
+    to emit crisis_detected + referral_issued audit events. Record status
+    stays partial — the worker decides when to save.
 
     If referral_organization is provided (S6: Gemma escalate_crisis
     output), it overrides the static _REFERRAL_ORG_BY_LANG lookup.
@@ -440,7 +439,6 @@ def _persist_crisis_record(
     )
     record = storage.update_intake_record(
         record.id,
-        status="paused_for_crisis",
         is_crisis=True,
         crisis_match_path=crisis_match_path,
         referral_issued=True,
@@ -747,12 +745,9 @@ async def _trigger_matching(
     """Fan-out matching: pairwise match_records vs every eligible
     candidate; persist hits as proposed MatchLinks.
 
-    Filters per S13-rev:
+    Filters:
       - drop self (don't self-match)
-      - paused_for_crisis records ARE included as candidates — the
-        intake is paused but the data is not lost; extracted fields
-        participate in match scoring identically to committed records
-      - partial records DO enter the pool
+      - all records (complete, partial, crisis-flagged) enter the pool
 
     The matching algorithm (core.matching.match_records) is unchanged;
     this wrapper is the orchestration-layer entry point. Each match
@@ -768,14 +763,7 @@ async def _trigger_matching(
     storage). See docs/matching.md §9 for the trigger contract.
     """
     all_records = storage.list_intake_records()
-    candidates = [
-        r
-        for r in all_records
-        if r.id != new_record.id
-    ]
-    has_paused_candidates = any(
-        r.status == "paused_for_crisis" for r in candidates
-    )
+    candidates = [r for r in all_records if r.id != new_record.id]
 
     new_rfl = _to_rfl_record(new_record)
 
@@ -841,7 +829,6 @@ async def _trigger_matching(
                     "network_match": (
                         network.model_dump() if network.matched else None
                     ),
-                    "includes_paused_candidates": has_paused_candidates,
                 },
             )
             created_links.append(link)
@@ -851,10 +838,7 @@ async def _trigger_matching(
         # produced no candidates" rather than guessing from event
         # absence. Single summary event with record_ids=[new_record_id]
         # and candidate_count=0.
-        storage.emit_match_proposed_empty(
-            new_record_id=new_record.id,
-            includes_paused_candidates=has_paused_candidates,
-        )
+        storage.emit_match_proposed_empty(new_record_id=new_record.id)
 
     log.info(
         "matching_trigger_fired",

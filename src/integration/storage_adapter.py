@@ -15,10 +15,8 @@ Audit-event mapping (Part 1 REV 4 + Part 2 REV 3):
 | Operation                                             | Event(s)         |
 |-------------------------------------------------------|------------------|
 | create_intake_record                                  | intake_created   |
-| update_intake_record (status → paused_for_crisis)     | intake_paused +  |
-|                                                       | crisis_detected +|
+| update_intake_record (is_crisis flag set)             | crisis_detected +|
 |                                                       | referral_issued  |
-|                                                       | (in that order)  |
 | update_intake_record (other field changed)            | one              |
 |                                                       | field_extracted  |
 |                                                       | per field        |
@@ -37,7 +35,7 @@ FakeClock (tests/fakes/fake_clock.py).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -123,8 +121,7 @@ class StorageAdapter:
         **fields: Any,
     ) -> IntakeRecord:
         """Read-modify-write. Emits field_extracted per changed field;
-        triple-emits intake_paused + crisis_detected + referral_issued
-        on status transition to paused_for_crisis.
+        emits crisis_detected + referral_issued when is_crisis flag is set.
 
         source_utterance and whisper_translation are optional metadata
         included in field_extracted event details when provided (S15a).
@@ -144,10 +141,8 @@ class StorageAdapter:
         old = records[idx]
         old_dump = old.model_dump()
 
-        new_status = fields.get("status", old.status)
-        is_crisis_transition = (
-            old.status != "paused_for_crisis"
-            and new_status == "paused_for_crisis"
+        is_crisis_flag_set = (
+            not old.is_crisis and fields.get("is_crisis") is True
         )
 
         merged: dict[str, Any] = dict(old_dump)
@@ -158,14 +153,10 @@ class StorageAdapter:
         records[idx] = new_record
         self._rewrite_jsonl(self._dir / INTAKE_FILE, records)
 
-        # Status-transition triple FIRST so it precedes any
-        # field_extracted on the same update call.
-        if is_crisis_transition:
-            for event_type in (
-                "intake_paused",
-                "crisis_detected",
-                "referral_issued",
-            ):
+        # Crisis audit events FIRST so they precede any field_extracted
+        # on the same update call.
+        if is_crisis_flag_set:
+            for event_type in ("crisis_detected", "referral_issued"):
                 self._append_audit_event(
                     event_type=event_type,
                     record_ids=[new_record.id],
@@ -240,28 +231,35 @@ class StorageAdapter:
         )
         return link
 
-    def emit_match_proposed_empty(
-        self,
-        new_record_id: UUID,
-        includes_paused_candidates: bool = False,
-    ) -> AuditEvent:
+    def emit_match_proposed_empty(self, new_record_id: UUID) -> AuditEvent:
         """Emit a match_proposed audit event for a zero-result run.
 
-        Bundle 1.5 S5: the matching trigger now ALWAYS emits
-        match_proposed after every scoring run, regardless of result.
-        For runs with at least one match, per-match events fire via
-        create_match_link (each carrying candidate_count = run total).
-        For zero-result runs, this helper emits a single summary
-        event with record_ids=[new_record_id] and candidate_count=0
-        so the frontend matchCandidates state can confirm "this turn
-        produced no candidates" rather than guessing from event
-        absence.
+        Bundle 1.5 S5: the matching trigger always emits match_proposed
+        after every scoring run. For zero-result runs, a single summary
+        event with candidate_count=0 lets the frontend confirm "no
+        candidates" without guessing from event absence.
         """
         return self._append_audit_event(
             event_type="match_proposed",
             record_ids=[new_record_id],
             candidate_count=0,
-            details={"includes_paused_candidates": includes_paused_candidates},
+            details={},
+        )
+
+    def emit_crisis_resolved(
+        self,
+        record_id: UUID,
+        resolution: Literal["referral_provided", "de_escalated"],
+        referral_organization: str | None = None,
+    ) -> AuditEvent:
+        """Emit a crisis_resolved audit event when the worker handles referral."""
+        details: dict[str, Any] = {"resolution": resolution}
+        if referral_organization:
+            details["referral_organization"] = referral_organization
+        return self._append_audit_event(
+            event_type="crisis_resolved",
+            record_ids=[record_id],
+            details=details,
         )
 
     def update_match_link_status(

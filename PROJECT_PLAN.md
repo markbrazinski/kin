@@ -246,7 +246,7 @@ judgment, not just model usage.
   safety_rules.classify (source text) → Gemma tool_call extraction
   (source text) → IntakeRecord persistence + audit trail → matching
   trigger. Crisis path branches early: skip extraction, skip matching,
-  persist as `paused_for_crisis` with referral fields. Latency budget:
+  persist crisis record with referral fields. Latency budget:
   ~8s Whisper + ~2s Gemma translate + ~1s Gemma tool_call ≈ ~11s
   cold, 4.5s warm. Comfortably under 25s timeout per stage.
 - **Audio:** ffmpeg head-silence padding required before Whisper
@@ -721,7 +721,7 @@ windows May 7-9 (safety-net) and May 13-15 (final).
   `_trigger_matching` in `transcription_pipeline.py` next to
   `ingest_audio`. ADR-004 records rationale.
 - **Crisis-path branching:** `safety_rules.classify(is_crisis=True)`
-  → persist `paused_for_crisis` record with referral fields, return.
+  → persist crisis record (is_crisis=True) with referral fields, return.
   No tool_call invocation, no `_trigger_matching` call.
 - **Bulk vs progressive field_extracted emission:** orchestration
   emits all field_extracted events at once after a single tool_call.

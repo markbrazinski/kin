@@ -6,9 +6,8 @@ in tmp.
 
 Audit-event mapping coverage:
   intake_created           — test_create_intake_record_*
-  intake_paused            — test_update_status_to_crisis_triple_emits
-  crisis_detected          — test_update_status_to_crisis_triple_emits
-  referral_issued          — test_update_status_to_crisis_triple_emits
+  crisis_detected          — test_update_intake_record_is_crisis_dual_emits
+  referral_issued          — test_update_intake_record_is_crisis_dual_emits
   field_extracted          — test_update_intake_record_*field_extracted*
   match_proposed           — test_create_match_link_*
   match_confirmed          — test_update_match_link_status_to_confirmed*
@@ -129,10 +128,10 @@ def test_update_intake_record_no_op_emits_no_field_extracted(
     assert events == []
 
 
-def test_update_intake_record_status_to_paused_for_crisis_triple_emits(
+def test_update_intake_record_is_crisis_dual_emits(
     tmp_path: Path,
 ) -> None:
-    """Status transition fires intake_paused → crisis_detected → referral_issued
+    """Setting is_crisis=True fires crisis_detected → referral_issued
     in that order, before any field_extracted on the same call.
     """
     adapter = _adapter(tmp_path)
@@ -140,32 +139,26 @@ def test_update_intake_record_status_to_paused_for_crisis_triple_emits(
         language="ar",
         source_device_id="tent_b",
     )
-    # Sanity: only intake_created so far.
     pre = [e.event_type for e in adapter.list_audit_events()]
     assert pre == ["intake_created"]
 
     adapter.update_intake_record(
         record.id,
-        status="paused_for_crisis",
         is_crisis=True,
         referral_issued=True,
         referral_organization="ICRC Family Links Network",
     )
 
     all_events = [e.event_type for e in adapter.list_audit_events()]
-    # intake_created + the triple + field_extracted per non-status field.
-    # Triple comes immediately after intake_created.
-    assert all_events[0:4] == [
+    # intake_created + crisis dual-emit + field_extracted per changed field.
+    assert all_events[0:3] == [
         "intake_created",
-        "intake_paused",
         "crisis_detected",
         "referral_issued",
     ]
-    # The remaining events are field_extracted (one per non-status changed field).
-    remaining = all_events[4:]
+    remaining = all_events[3:]
     assert all(et == "field_extracted" for et in remaining)
-    # Three non-status fields changed: is_crisis, referral_issued,
-    # referral_organization.
+    # Three fields changed: is_crisis, referral_issued, referral_organization.
     assert len(remaining) == 3
 
 
