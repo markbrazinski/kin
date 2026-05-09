@@ -104,6 +104,8 @@ _CRISIS_KEYWORDS: dict[SupportedLang, frozenset[str]] = {
             "سأقتل",
             "سوف نهاجم",
             "خطر وشيك",
+            "ما عاد فيني",
+            "ما عاد فيني أكمل",
         }
     ),
     "fa": frozenset(

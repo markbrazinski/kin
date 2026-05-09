@@ -78,6 +78,16 @@ function SubSection({ id, title, icon, meta, children, expandedMap, setExpandedM
 // ─── Metadata strip ───────────────────────────────────────────────────────────
 
 function MetadataStrip({ record }: { record: RecordData }) {
+  // Before intake begins, recordId and capturedAt are both absent.
+  // Show a minimal "ready" placeholder rather than four dashes.
+  if (!record.recordId && !record.capturedAt) {
+    return (
+      <div className="px-6 pt-5 pb-3 border-b border-hair">
+        <span className="text-[13px] text-muted italic">Ready to begin</span>
+      </div>
+    );
+  }
+
   const syncDotColor =
     record.syncStatus === 'synced' ? 'bg-green' :
     record.syncStatus === 'queued' ? 'bg-amber' :
@@ -129,9 +139,10 @@ type PersonRowProps = {
   member: FamilyMember;
   role: 'searcher' | 'missing' | 'roster';
   isMinor?: boolean;
+  lastSeenFallback?: string;
 };
 
-function PersonRow({ member, role, isMinor }: PersonRowProps) {
+function PersonRow({ member, role, isMinor, lastSeenFallback }: PersonRowProps) {
   const rtl = isRtlText(member.name);
   const showNested = role === 'missing';
 
@@ -185,28 +196,25 @@ function PersonRow({ member, role, isMinor }: PersonRowProps) {
               <IconMapPin size={11} />
               Last seen
             </div>
-            {member.lastSeen
-              ? <span className="text-[13px] text-ink">{member.lastSeen}</span>
+            {(member.lastSeen ?? lastSeenFallback)
+              ? <span className="text-[13px] text-ink">{member.lastSeen ?? lastSeenFallback}</span>
               : <span className="text-[13px] text-muted">—</span>
             }
           </div>
-          {/* MARKS */}
-          <div>
-            <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-0.5">
-              <IconSparkle size={11} />
-              {`Marks · ${member.marks?.length ?? 0}`}
+          {/* MARKS — hidden when empty */}
+          {(member.marks && member.marks.length > 0) && (
+            <div>
+              <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-0.5">
+                <IconSparkle size={11} />
+                {`Marks · ${member.marks.length}`}
+              </div>
+              <ul className="space-y-1">
+                {member.marks.map((m, i) => (
+                  <li key={i} className="text-[14px] text-ink">{m}</li>
+                ))}
+              </ul>
             </div>
-            {member.marks && member.marks.length > 0
-              ? (
-                <ul className="space-y-1">
-                  {member.marks.map((m, i) => (
-                    <li key={i} className="text-[14px] text-ink">{m}</li>
-                  ))}
-                </ul>
-              )
-              : <span className="text-[13px] text-muted">—</span>
-            }
-          </div>
+          )}
         </div>
       )}
     </div>
@@ -223,6 +231,7 @@ type FamilyNetworkProps = {
   expandedMap: ExpandedMap;
   setExpandedMap: Dispatch<SetStateAction<ExpandedMap>>;
   highlightKey: string | null;
+  lastSeenFallback?: string;
 };
 
 function FamilyNetworkSection({
@@ -233,6 +242,7 @@ function FamilyNetworkSection({
   expandedMap,
   setExpandedMap,
   highlightKey,
+  lastSeenFallback,
 }: FamilyNetworkProps) {
   const hasAny = searcherName || missingPersons.length > 0 || familyRoster.length > 0;
   if (!hasAny) return null;
@@ -290,9 +300,6 @@ function FamilyNetworkSection({
           <div>
             <div className="text-[11.5px] uppercase tracking-wider text-muted mt-3 mb-0.5">
               Missing · {missingPersons.length}
-              {missingPersons.reduce((n, m) => n + (m.marks?.length ?? 0), 0) > 0
-                ? ` · ${missingPersons.reduce((n, m) => n + (m.marks?.length ?? 0), 0)} marks`
-                : ''}
             </div>
             <div>
               {missingPersons.map((m, i) => (
@@ -301,6 +308,7 @@ function FamilyNetworkSection({
                   member={m}
                   role="missing"
                   isMinor={typeof m.age === 'number' && m.age > 0 && m.age < 18}
+                  lastSeenFallback={lastSeenFallback}
                 />
               ))}
             </div>
@@ -395,12 +403,35 @@ function RecordCard({ record, minor, justPopulatedKey: _justPopulatedKey, disabl
           <FamilyNetworkSection
             searcherName={record.searcherName}
             searcherNameLatin={record.searcherNameLatin}
-            missingPersons={record.missingPersons}
-            familyRoster={record.familyRoster}
+            missingPersons={[
+              // Pipeline populates family_roster with status per member.
+              // Merge legacy missingPersons with roster members flagged MISSING.
+              ...record.missingPersons,
+              ...record.familyRoster.filter(m => m.status === 'MISSING' || !m.status),
+            ]}
+            familyRoster={record.familyRoster.filter(m => m.status === 'WITH_SEARCHER')}
             expandedMap={expandedMap}
             setExpandedMap={setExpandedMap}
             highlightKey={highlightKey ?? null}
+            lastSeenFallback={record.lastSeenLocation || undefined}
           />
+
+          {record.physicalDesc && (
+            <SubSection
+              id="identifying_marks"
+              title="Identifying marks"
+              icon={<IconSparkle size={18} />}
+              expandedMap={expandedMap}
+              setExpandedMap={setExpandedMap}
+              highlight={highlightKey === 'distinguishing_marks'}
+            >
+              <div className="px-6 pb-3">
+                <p className="text-[14px] text-ink leading-snug" dir="auto">
+                  {record.physicalDesc}
+                </p>
+              </div>
+            </SubSection>
+          )}
 
           <GuardianProtection
             data={record.guardian || {}}

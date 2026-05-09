@@ -51,6 +51,14 @@ def test_classify_crisis_ar_detects() -> None:
     assert result.crisis_resources_locale == "ar"
 
 
+def test_classify_crisis_ar_ma_aad_fini() -> None:
+    """Arabic distress phrase from the demo script triggers crisis block."""
+    result = classify("ما عاد فيني أكمل", lang="ar")
+    assert result.is_crisis is True
+    assert result.suggested_action == "block_intake"
+    assert result.crisis_resources_locale == "ar"
+
+
 def test_classify_crisis_fa_detects() -> None:
     """Farsi utterance containing an approved FA crisis keyword."""
     result = classify("دیگر طاقت ندارم، خودکشی می‌کنم", lang="fa")

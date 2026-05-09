@@ -136,7 +136,7 @@ export function MatchAuditPanel({
             Match audit
           </div>
           <div className="text-[13px] text-ink mt-0.5 font-mono truncate">
-            {intakeIdA.slice(0, 8)}… ↔ {intakeIdB.slice(0, 8)}…
+            KIN-2026-{intakeIdA.slice(-4).toUpperCase()} ↔ KIN-2026-{intakeIdB.slice(-4).toUpperCase()}
           </div>
         </div>
         <button

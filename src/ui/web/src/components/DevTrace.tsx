@@ -34,7 +34,7 @@ function TracePanel({ calls, highlightId, onClose }: TracePanelProps) {
       <div className="flex-1 overflow-y-auto px-4 py-3 font-mono text-[12.5px]">
         {reversed.length === 0 && (
           <div className="text-muted text-[12px] font-sans leading-relaxed">
-            No calls yet. Start the demo sequence or simulate a match to see the trace populate.
+            No tool calls yet.
           </div>
         )}
         <ol className="space-y-3">

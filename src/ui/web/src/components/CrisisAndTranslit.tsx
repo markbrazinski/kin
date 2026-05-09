@@ -186,7 +186,7 @@ function CrisisReferralCard({
 
         <div className={`mt-4 flex items-center gap-2 text-[14px] text-muted ${rtl ? "flex-row-reverse" : ""}`}>
           <IconInfo size={14} />
-          <span>{copy.hotline} · +00 000 000 0000</span>
+          <span>{copy.hotline} · +41 22 730 20 51</span>
         </div>
       </div>
 

@@ -36,7 +36,7 @@ import {
   getActiveMatchCount,
   type MatchCandidatesMap,
 } from './state/matchCandidates';
-import { uploadAudioBlob, postCrisisResolved } from './lib/api';
+import { uploadAudioBlob, postCrisisResolved, postDemoRunIntake } from './lib/api';
 import { voiceCopy } from './lib/voiceCopy';
 import { dirFor, t } from './lib/i18n';
 import type { AuditEnvelope, StructlogEnvelope } from './lib/sseEnvelope';
@@ -127,6 +127,71 @@ const YUSUF_DEMO_STEPS: DemoStep[] = [
   // crisis fires after this step — see runYusufDemo
 ];
 
+// SYNTHETIC_YUSUF_STEPS — slow-paced choreography for ⌘⇧Q.
+// 22 s waveform → 2 s processing pause → transcript T+24s → fields T+26–29.5s.
+// Crisis fires after runSteps at T+30s (see runSyntheticYusuf).
+const SYNTHETIC_YUSUF_STEPS: DemoStep[] = [
+  // Phase 1 — RECORDING (waveform animates for 22 s)
+  { at: 0, state: "recording" },
+  // Phase 2 — PROCESSING PAUSE
+  { at: 22000, state: "processing" },
+  // Phase 3 — TRANSCRIPT (T+24s, two structlog events same tick)
+  { at: 24000,
+    structlog: { event: "whisper_transcription_start" },
+    trace: { name: "whisper.transcribe", args: { lang: "ar", duration: "22s", model: "medium" }, result: "segments: 1, confidence: 0.97" } },
+  { at: 24000,
+    structlog: {
+      event: "transcription_chunk",
+      source: "أنا يوسف العمر، عمري واحد وأربعون سنة. أبحث عن أختي مريم وابن أختي محمد، عمره ثمان سنوات. زوجتي عائشة معي. آخر مرة عند البوابة الجنوبية قبل ثلاثة أيام خلال تدافع. محمد عنده ندبة فوق حاجبه الأيسر... ما عاد فيني أكمل.",
+      translation: "I am Yusuf Al-Omar, forty-one years old. I am looking for my sister Mariam and my nephew Mohamad, he is eight years old. My wife Aisha is with me. Last seen at the southern gate three days ago during a crowd surge. Mohamad has a scar above his left eyebrow... I can't go on.",
+    } },
+  { at: 24500,
+    structlog: { event: "whisper_transcription_complete" },
+    trace: { name: "whisper.translate", args: { source: "ar", target: "en" }, result: "complete" } },
+  // Phase 4 — EXTRACTION (T+26s)
+  { at: 26000, state: "extracting",
+    structlog: { event: "adapter_call_start" },
+    trace: { name: "gemma.extract", args: { model: "gemma4:e2b", tool: "extract_intake_fields", searcher_name: "يوسف العمر", missing: "[مريم, محمد]", last_seen: "البوابة الجنوبية", date: "قبل ثلاثة أيام", marks: "ندبة فوق الحاجب الأيسر" }, result: "tool_call_emitted" } },
+  { at: 26000,
+    populateRaw: { searcherName: "يوسف العمر", searcherNameLatin: "Yusuf Al-Omar" },
+    structlog: { event: "tool_call_invoked", tool: "extract_intake_fields" } },
+  // T+26.5s: Mariam (no marks — scar belongs to Mohamad)
+  { at: 26500,
+    populateRaw: { missingPersons: [
+      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أختي",
+        status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
+    ] } },
+  // T+27s: add Mohamad with scar; flag_minor fires
+  { at: 27000,
+    populateRaw: { missingPersons: [
+      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أختي",
+        status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
+      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن أختي",
+        status: "MISSING", lastSeen: "البوابة الجنوبية",
+        marks: ["ندبة فوق الحاجب الأيسر · scar above left brow"] },
+    ] },
+    structlog: { event: "tool_call_invoked", tool: "flag_minor", subject: "محمد", age: 8 },
+    trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
+  // T+27.5s: family roster — Aisha with searcher
+  { at: 27500,
+    populateRaw: { familyRoster: [
+      { name: "عائشة", nameLatin: "Aisha", relationship: "زوجتي", status: "WITH_SEARCHER" },
+    ] } },
+  // T+28s: last seen location
+  { at: 28000,
+    populate: "lastSeenLocation", value: "Southern gate — camp perimeter",
+    lastSeenLocationSource: "البوابة الجنوبية" },
+  // T+28.5s: last seen date
+  { at: 28500,
+    populate: "lastSeenDate", value: "3 days ago" },
+  // T+29s: circumstance
+  { at: 29000,
+    populate: "circumstance", value: "Separated during crowd surge at the southern gate" },
+  // T+29.5s: physical description — crisis fires 500 ms after this
+  { at: 29500,
+    populate: "physicalDesc", value: "Mohamad: scar above left eyebrow" },
+];
+
 // Mariam al-Saleh — Arabic intake, complete, no crisis.
 // Searcher: Mariam (32). Missing: brother Yusuf (35) + son Mohamad (8).
 // Roster: empty (no one with her).
@@ -147,14 +212,14 @@ const MARIAM_DEMO_STEPS: DemoStep[] = [
   // Missing — Yusuf (brother) — with per-person lastSeen + marks (complete intake)
   { at: 5200,
     populateRaw: { missingPersons: [
-      { name: "يوسف", nameLatin: "Yusuf", age: 35, relationship: "أخ", status: "MISSING",
+      { name: "يوسف", nameLatin: "Yusuf", age: 41, relationship: "أخ", status: "MISSING",
         lastSeen: "البوابة الجنوبية · Southern gate", marks: ["أصلع جزئياً · partial baldness"] },
     ]},
     trace: { name: "extract_intake_fields", args: { missing_persons: "[يوسف, 35, brother]" }, result: "ok" } },
   // Missing — Mohamad (son, minor) — with per-person lastSeen + marks
   { at: 6400,
     populateRaw: { missingPersons: [
-      { name: "يوسف", nameLatin: "Yusuf", age: 35, relationship: "أخ", status: "MISSING",
+      { name: "يوسف", nameLatin: "Yusuf", age: 41, relationship: "أخ", status: "MISSING",
         lastSeen: "البوابة الجنوبية · Southern gate", marks: ["أصلع جزئياً · partial baldness"] },
       { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن", status: "MISSING",
         lastSeen: "البوابة الجنوبية · Southern gate", marks: ["وحمة على الخد الأيسر · birthmark left cheek"] },
@@ -167,6 +232,66 @@ const MARIAM_DEMO_STEPS: DemoStep[] = [
   { at: 8100, populate: "lastSeenDate", value: "3 days ago",
     trace: { name: "normalize_date", args: { input: "قبل ثلاثة أيام" }, result: "-3d" } },
   // ends at phase="done" — Save button activates (see runMariam)
+];
+
+// SYNTHETIC_MARIAM_STEPS — slow-paced choreography for ⌘⇧W.
+// 16 s waveform → 2 s processing pause → transcript T+18s → fields T+20–23s.
+// submit_record fires in runSyntheticMariam after lastAt+500ms.
+const SYNTHETIC_MARIAM_STEPS: DemoStep[] = [
+  // Phase 1 — RECORDING (waveform animates for 16 s)
+  { at: 0, state: "recording" },
+  // Phase 2 — PROCESSING PAUSE
+  { at: 16000, state: "processing" },
+  // Phase 3 — TRANSCRIPT (T+18s, two structlog events same tick)
+  { at: 18000,
+    structlog: { event: "whisper_transcription_start" },
+    trace: { name: "whisper.transcribe", args: { lang: "ar", duration: "16s", model: "medium" }, result: "segments: 1, confidence: 0.97" } },
+  { at: 18000,
+    structlog: {
+      event: "transcription_chunk",
+      source: "أنا مريم العمر، عمري اثنان وثلاثون سنة. أبحث عن أخي يوسف وابني محمد، عمره ثمان سنوات. فقدنا قبل ثلاثة أيام عند البوابة الجنوبية. محمد عنده ندبة فوق حاجبه الأيسر.",
+      translation: "I am Mariam Al-Omar, thirty-two years old. I am looking for my brother Yusuf and my son Mohamad, he is eight years old. We were separated three days ago at the southern gate. Mohamad has a scar above his left eyebrow.",
+    } },
+  { at: 18500,
+    structlog: { event: "whisper_transcription_complete" },
+    trace: { name: "whisper.translate", args: { source: "ar", target: "en" }, result: "complete" } },
+  // Phase 4 — EXTRACTION (T+20s)
+  { at: 20000, state: "extracting",
+    structlog: { event: "adapter_call_start" },
+    trace: { name: "gemma.extract", args: { model: "gemma4:e2b", tool: "extract_intake_fields", searcher_name: "مريم العمر", missing: "[يوسف, محمد]", last_seen: "البوابة الجنوبية", date: "قبل ثلاثة أيام", marks: "ندبة فوق الحاجب الأيسر" }, result: "tool_call_emitted" } },
+  { at: 20000,
+    populateRaw: { searcherName: "مريم العمر", searcherNameLatin: "Mariam Al-Omar" },
+    structlog: { event: "tool_call_invoked", tool: "extract_intake_fields" } },
+  // T+20.5s: Yusuf (no marks in this intake)
+  { at: 20500,
+    populateRaw: { missingPersons: [
+      { name: "يوسف", nameLatin: "Yusuf", age: 41, relationship: "أخي",
+        status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
+    ] } },
+  // T+21s: add Mohamad with scar; flag_minor fires
+  { at: 21000,
+    populateRaw: { missingPersons: [
+      { name: "يوسف", nameLatin: "Yusuf", age: 41, relationship: "أخي",
+        status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
+      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن",
+        status: "MISSING", lastSeen: "البوابة الجنوبية",
+        marks: ["ندبة فوق الحاجب الأيسر · scar above left brow"] },
+    ] },
+    structlog: { event: "tool_call_invoked", tool: "flag_minor", subject: "محمد", age: 8 },
+    trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
+  // T+21.5s: last seen location
+  { at: 21500,
+    populate: "lastSeenLocation", value: "Southern gate — camp perimeter",
+    lastSeenLocationSource: "البوابة الجنوبية" },
+  // T+22s: last seen date
+  { at: 22000,
+    populate: "lastSeenDate", value: "3 days ago" },
+  // T+22.5s: circumstance
+  { at: 22500,
+    populate: "circumstance", value: "Separated three days ago at the southern gate" },
+  // T+23s: physical description — submit_record fires 500 ms after this
+  { at: 23000,
+    populate: "physicalDesc", value: "Mohamad: scar above left eyebrow" },
 ];
 
 const DEMO_STEPS: DemoStep[] = [
@@ -354,6 +479,14 @@ export type VoicePanelProps = {
   /* Called when Begin is pressed while displayPhase === 'saved',
      so the demo sequencer can reset App's phase back to 'ready'. */
   onBeginNewIntake?: () => void;
+  /* Ref owned by App that holds a queued demo filename. VoicePanel
+     checks and clears it on Begin to run the real pipeline on a
+     pre-recorded file instead of starting mic capture. */
+  demoFileRef?: React.MutableRefObject<'yusuf' | 'mariam' | null>;
+  /* Ref owned by App that holds a queued synthetic runner (⌘⇧J/⌘⇧K).
+     Checked before demoFileRef — fires the full synthetic sequencer
+     instead of mic capture or real-pipeline file. */
+  syntheticDemoRef?: React.MutableRefObject<(() => void) | null>;
 };
 
 export function VoicePanel({
@@ -367,11 +500,18 @@ export function VoicePanel({
   onCrisisResponse,
   demoPhase,
   onBeginNewIntake,
+  demoFileRef: externalDemoFileRef,
+  syntheticDemoRef,
 }: VoicePanelProps) {
   const intakeIdRef = useRef<string | null>(intakeId);
   intakeIdRef.current = intakeId;
   const onCrisisResponseRef = useRef(onCrisisResponse);
   onCrisisResponseRef.current = onCrisisResponse;
+
+  // demoFileRef: owned by App, passed down so the keyboard handler
+  // (App scope) can set it and handleBegin (here) can read + clear it.
+  const localDemoFileRef = useRef<'yusuf' | 'mariam' | null>(null);
+  const demoFileRef = externalDemoFileRef ?? localDemoFileRef;
 
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [lastPostStatus, setLastPostStatus] = useState<PostStatus | null>(null);
@@ -396,12 +536,36 @@ export function VoicePanel({
     },
   });
 
-  const { phase, onBegin: phaseBegin, onStop: phaseStop } = useVoicePhase({
+  const { phase, onBegin: phaseBegin, onStop: phaseStop, onForceRecording: phaseForceRecording } = useVoicePhase({
     micState,
     auditEvents,
     structlogEvents,
     lastPostStatus,
   });
+
+  // Demo file path: POST pre-recorded audio through the real pipeline.
+  // Mirrors the onStop callback — same error handling, same crisis branch.
+  // Calls phaseStop() when POST settles so POST_RESOLVED watcher fires
+  // (it requires phase to be transcribing/extracting).
+  const startDemoFile = async (filename: 'yusuf' | 'mariam') => {
+    try {
+      const resp = await postDemoRunIntake({
+        filename,
+        lang: speakerLanguage,
+        sourceDeviceId,
+        intakeId: intakeIdRef.current,
+      });
+      setUploadError(null);
+      phaseStop();                    // recording → transcribing
+      setLastPostStatus('completed'); // triggers POST_RESOLVED → done
+      if (resp.is_crisis) {
+        onCrisisResponseRef.current?.(resp.locale_aware_message ?? null);
+      }
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+      phaseStop(); // drop out of recording so UI doesn't stay stuck
+    }
+  };
 
   // Demo display override — pure visual, does not affect real phase machine
   const displayPhase: VoicePhase = demoPhase ?? phase;
@@ -431,14 +595,33 @@ export function VoicePanel({
     'border-line text-ink';
 
   const handleBegin = () => {
-    // "Begin new intake" in saved phase: navigate to fresh ready state.
-    // Do NOT start recording — worker presses Begin again when ready.
+    // "Begin new intake" in saved phase: reset, then check for queued demo.
     if (displayPhase === 'saved') {
+      const syntheticQueued = syntheticDemoRef?.current;
+      if (syntheticQueued) {
+        syntheticDemoRef!.current = null;
+        syntheticQueued();
+        return;
+      }
       onBeginNewIntake?.();
+      return;
+    }
+    // Synthetic demo queued via ⌘⇧J/⌘⇧K — run it instead of mic capture.
+    const syntheticQueued = syntheticDemoRef?.current;
+    if (syntheticQueued) {
+      syntheticDemoRef!.current = null;
+      syntheticQueued();
       return;
     }
     phaseBegin();
     setLastPostStatus(null);
+    const queued = demoFileRef.current;
+    if (queued) {
+      demoFileRef.current = null;
+      phaseForceRecording(); // awaiting → recording (waveform animates)
+      void startDemoFile(queued);
+      return;
+    }
     void start();
   };
 
@@ -507,6 +690,16 @@ export function VoicePanel({
     </div>
   );
 }
+
+/* Language code → display label for the SPOKEN LANGUAGE metadata field. */
+const LANG_LABELS: Record<string, string> = {
+  en: 'English',
+  es: 'Spanish (Latin America)',
+  ar: 'Arabic (Levantine)',
+  fa: 'Farsi / Dari',
+  fr: 'French',
+  uk: 'Ukrainian',
+};
 
 /* Speaker-facing greeting paragraph. Read aloud to the displaced
    person before pressing Begin. Renders in speakerLanguage (not
@@ -661,27 +854,6 @@ function DemoDock({ visible, onStart, onReset, onMatch, onNetworkMatch, onCrisis
   );
 }
 
-// ---------- Demo reopen pill --------------------------------------------
-// Rendered when the dock is hidden. Bottom-left, same corner the dock lived in,
-// so the eye finds it without scanning. Click restores the dock; ⌘. still
-// toggles for users whose browser doesn't intercept Cmd+Period.
-type DemoReopenPillProps = {
-  onOpen: () => void;
-};
-
-function DemoReopenPill({ onOpen }: DemoReopenPillProps) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label="Show demo controls"
-      className="fixed bottom-3 left-3 z-30 flex items-center gap-1.5 bg-card border border-line rounded-kin shadow-elevated px-3 h-9 text-[13px] font-medium text-ink hover:bg-subtle transition-colors"
-    >
-      <IconPlay size={14} />
-      Demo
-    </button>
-  );
-}
 
 // ---------- Main App ------------------------------------------------------
 function App() {
@@ -716,7 +888,10 @@ function App() {
   const [calls, setCalls]                     = useState<TraceCall[]>([]);
   const [highlightedCall, setHighlightedCall] = useState<number | null>(null);
   const demoStartRef = useRef<number | null>(null);
+  const demoFileRef = useRef<'yusuf' | 'mariam' | null>(null);
   const callIdRef = useRef(0);
+  const pendingPostCrisisRef = useRef<(() => void) | null>(null);
+  const syntheticDemoRef = useRef<(() => void) | null>(null);
 
   // Queue records — fetched on view=queue mount; drives rail badge count
   const { records: queueRecords, refetch: refetchQueue } = useQueueRecords(view === 'queue');
@@ -852,7 +1027,11 @@ function App() {
       const mod = isMac ? e.metaKey : e.ctrlKey;
       // ESC — crisis > presentation > nothing
       if (e.key === 'Escape') {
-        if (crisisOpen) { setCrisisOpen(false); setCrisisMessage(null); return; }
+        if (crisisOpen) {
+        setCrisisOpen(false); setCrisisMessage(null);
+        pendingPostCrisisRef.current?.(); pendingPostCrisisRef.current = null;
+        return;
+      }
         if (presentationActive) { setPresentationActive(false); return; }
         return;
       }
@@ -864,6 +1043,32 @@ function App() {
       // ⌘⇧P — presentation mode toggle
       if (e.shiftKey && (e.key === 'P' || e.key === 'p')) {
         e.preventDefault(); setPresentationActive(!presentationActive); return;
+      }
+      // ⌘⇧Y — queue Yusuf demo file (real pipeline on Begin); ?dev=1 keeps synthetic path
+      if (e.shiftKey && (e.key === 'Y' || e.key === 'y')) {
+        e.preventDefault();
+        if (devMode) { runYusufDemo(); return; }
+        demoFileRef.current = 'yusuf';
+        return;
+      }
+      // ⌘⇧M — queue Mariam demo file; ?dev=1 keeps synthetic path
+      if (e.shiftKey && (e.key === 'M' || e.key === 'm')) {
+        e.preventDefault();
+        if (devMode) { runMariam(); return; }
+        demoFileRef.current = 'mariam';
+        return;
+      }
+      // ⌘⇧J — queue Yusuf synthetic demo; fires on next Begin press
+      if (e.shiftKey && (e.key === 'J' || e.key === 'j')) {
+        e.preventDefault(); syntheticDemoRef.current = runSyntheticYusuf; return;
+      }
+      // ⌘⇧K — queue Mariam synthetic demo; fires on next Begin press
+      if (e.shiftKey && (e.key === 'K' || e.key === 'k')) {
+        e.preventDefault(); syntheticDemoRef.current = runSyntheticMariam; return;
+      }
+      // ⌘⇧R — reset and re-seed
+      if (e.shiftKey && (e.key === 'R' || e.key === 'r')) {
+        e.preventDefault(); onReset(); return;
       }
       // ⌘D (no shift) — TracePanel toggle
       if (!e.shiftKey && (e.key === 'd' || e.key === 'D')) {
@@ -995,6 +1200,7 @@ function App() {
     setJustPopulated(null);
     setNetworkMatchResult(null);
     setDemoStructlogEvents([]);
+    pendingPostCrisisRef.current = null;
     setPrevRecord(null);
     // Clear SSE reducer state too — without this, intakeId stays
     // pinned to the previous turn's record id and the next mic turn
@@ -1110,6 +1316,113 @@ function App() {
     }, lastAt + 600);
   };
 
+  const runSyntheticYusuf = () => {
+    onReset();
+    demoStartRef.current = performance.now();
+    setSpeakerLanguage("ar");
+    setRecord(prev => ({
+      ...prev,
+      recordId: '00000000-0000-0000-0000-000000000042',
+      capturedAt: new Date().toISOString(),
+      syncStatus: 'queued' as const,
+      language: 'Arabic (Levantine)',
+    }));
+    setTimerRunning(true);
+    setTimerSec(0);
+    logCall({ name: "session.start", args: { session_id: 42 }, result: "ok" }, 0);
+    runSteps(SYNTHETIC_YUSUF_STEPS);
+    const lastAt = SYNTHETIC_YUSUF_STEPS[SYNTHETIC_YUSUF_STEPS.length - 1].at;
+    setTimeout(() => {
+      const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
+      setDemoStructlogEvents(prev => [...prev, {
+        type: 'structlog_event' as const,
+        at: new Date().toISOString(),
+        source_device_id: null,
+        payload: { event: "tool_call_invoked", tool: "escalate_crisis", score: 0.91, anchor: "ما عاد فيني أكمل" },
+      }]);
+      logCall({ name: "escalate_crisis",
+                args: { score: 0.91, anchor: "ما عاد فيني أكمل", lang: "ar" },
+                result: "referral_card_elevated" }, t);
+      setCrisisOpen(true);
+      pendingPostCrisisRef.current = () => {
+        const t2 = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
+        setDemoStructlogEvents(prev => [...prev,
+          { type: 'structlog_event' as const, at: new Date().toISOString(), source_device_id: null,
+            payload: { event: "tool_call_invoked", tool: "submit_record", status: "complete" } },
+          { type: 'structlog_event' as const, at: new Date().toISOString(), source_device_id: null,
+            payload: { event: "record_state", state: "complete", fields_extracted: 8 } },
+        ]);
+        logCall({ name: "submit_record", args: { status: "complete" }, result: "queued_local" }, t2);
+        logCall({ name: "intake_records_listed", args: { count: 1 }, result: "KIN-2026-0042" }, t2 + 300);
+        setPhase("done");
+        refetchQueue();
+      };
+    }, lastAt + 500);
+  };
+
+  const runSyntheticMariam = () => {
+    onReset();
+    // Seed Side A with Yusuf's completed record so the match graph shows
+    // "INTAKE A · YUSUF AL-OMAR" rather than falling back to the fixture.
+    setPrevRecord({
+      ...INITIAL_RECORD,
+      recordId: '00000000-0000-0000-0000-000000000042',
+      capturedAt: new Date().toISOString(),
+      syncStatus: 'queued' as const,
+      language: 'Arabic (Levantine)',
+      searcherName: 'يوسف العمر',
+      searcherNameLatin: 'Yusuf Al-Omar',
+      missingPersons: [
+        { name: 'مريم', nameLatin: 'Mariam', age: 32, relationship: 'أختي', status: 'MISSING',
+          lastSeen: 'البوابة الجنوبية', marks: [] },
+        { name: 'محمد', nameLatin: 'Mohamad', age: 8, relationship: 'ابن أختي', status: 'MISSING',
+          lastSeen: 'البوابة الجنوبية', marks: ['ندبة فوق الحاجب الأيسر · scar above left brow'] },
+      ],
+      familyRoster: [
+        { name: 'عائشة', nameLatin: 'Aisha', relationship: 'زوجتي', status: 'WITH_SEARCHER' },
+      ],
+      lastSeenLocation: 'Southern gate — camp perimeter',
+      lastSeenLocationSource: 'البوابة الجنوبية',
+      lastSeenDate: '3 days ago',
+      circumstance: 'Separated during crowd surge at the southern gate',
+      physicalDesc: 'Mohamad: scar above left eyebrow',
+    });
+    demoStartRef.current = performance.now();
+    setSpeakerLanguage("ar");
+    setRecord(prev => ({
+      ...prev,
+      recordId: '00000000-0000-0000-0000-000000000049',
+      capturedAt: new Date().toISOString(),
+      syncStatus: 'queued' as const,
+      language: 'Arabic (Levantine)',
+    }));
+    setMatchCandidates(prev => applyMatchProposed(
+      prev,
+      '00000000-0000-0000-0000-000000000049',
+      1,
+      ['00000000-0000-0000-0000-000000000049', '00000000-0000-0000-0000-000000000042'],
+      new Date().toISOString(),
+    ));
+    setTimerRunning(true);
+    setTimerSec(0);
+    logCall({ name: "session.start", args: { session_id: 49 }, result: "ok" }, 0);
+    runSteps(SYNTHETIC_MARIAM_STEPS);
+    const lastAt = SYNTHETIC_MARIAM_STEPS[SYNTHETIC_MARIAM_STEPS.length - 1].at;
+    setTimeout(() => {
+      const t = demoStartRef.current === null ? 0 : performance.now() - demoStartRef.current;
+      setDemoStructlogEvents(prev => [...prev,
+        { type: 'structlog_event' as const, at: new Date().toISOString(), source_device_id: null,
+          payload: { event: "tool_call_invoked", tool: "submit_record", status: "complete" } },
+        { type: 'structlog_event' as const, at: new Date().toISOString(), source_device_id: null,
+          payload: { event: "record_state", state: "complete", fields_extracted: 8 } },
+      ]);
+      logCall({ name: "submit_record", args: { status: "complete" }, result: "queued_local" }, t);
+      logCall({ name: "intake_records_listed", args: { count: 2 }, result: "KIN-2026-0049" }, t + 300);
+      setPhase("done");
+      refetchQueue();
+    }, lastAt + 500);
+  };
+
   const onSimulateMatch = () => {
     setView("match");
     setMatchPhase("split");
@@ -1129,6 +1442,25 @@ function App() {
     }, 3400);
   };
 
+  const fireNodeMatchCalls = () => {
+    const t0 = performance.now();
+    setTimeout(() => logCall({
+      name: "node_match",
+      args: { pair: "محمد ↔ محمد", type: "missing_person → missing_person", score: 0.85 },
+      result: "primary_match", highlight: true,
+    }, performance.now() - t0), 800);
+    setTimeout(() => logCall({
+      name: "node_match",
+      args: { pair: "مريم ↔ مريم", type: "missing_person → searcher", score: 0.85 },
+      result: "supporting_match",
+    }, performance.now() - t0), 1800);
+    setTimeout(() => logCall({
+      name: "node_match",
+      args: { pair: "يوسف ↔ يوسف", type: "searcher → missing_person", score: 0.85 },
+      result: "supporting_match",
+    }, performance.now() - t0), 2800);
+  };
+
   const onSimulateNetworkMatch = () => {
     setNetworkMatchResult(DEFAULT_NETWORK_RESULT);
     setView("match");
@@ -1144,9 +1476,12 @@ function App() {
              timerRunning ? timerSec * 1000 : 0);
     refetchQueue();
     setPhase('saved');
-    // Snapshot current record as Side A for the match graph — the next
-    // intake's record becomes Side B when a match is confirmed.
-    setPrevRecord(record);
+    // Snapshot current record as Side A for the match graph, but only if
+    // prevRecord isn't already seeded with a different intake (synthetic
+    // Mariam demo pre-seeds Yusuf as Side A before Mariam's fields populate).
+    setPrevRecord(prev =>
+      prev && prev.recordId && prev.recordId !== record.recordId ? prev : record
+    );
     // No auto-route. If activeMatchCount > 0 the queue rail badge
     // lights up; worker clicks the badge to navigate to match view.
   };
@@ -1188,6 +1523,7 @@ function App() {
               setMatchPhase('split');
               setTimeout(() => setMatchPhase('linking'), 400);
               setTimeout(() => setMatchPhase('merged'), 3400);
+              fireNodeMatchCalls();
             } else {
               setView(next === 'queue' ? 'queue' : 'single');
             }
@@ -1241,6 +1577,8 @@ function App() {
                     }}
                     demoPhase={phase !== 'ready' ? voicePhasemap[phase] : undefined}
                     onBeginNewIntake={() => { onReset(); }}
+                    demoFileRef={demoFileRef}
+                    syntheticDemoRef={syntheticDemoRef}
                   />
                 </div>
 
@@ -1262,6 +1600,7 @@ function App() {
                         setMatchPhase('split');
                         setTimeout(() => setMatchPhase('linking'), 400);
                         setTimeout(() => setMatchPhase('merged'), 3400);
+                        fireNodeMatchCalls();
                       }}
                       className="shrink-0 px-3 h-8 text-[12px] font-medium rounded-kin bg-white border border-green/40 text-[oklch(0.38_0.1_155)] hover:bg-green-soft transition-colors"
                     >
@@ -1305,7 +1644,16 @@ function App() {
                     // SSE path wins when available; demo-path setRecord patches are the fallback
                     recordId: streamState.intakeId ?? record.recordId,
                     capturedAt: streamState.capturedAt ?? record.capturedAt,
-                    syncStatus: record.syncStatus ?? 'local',
+                    // syncStatus: queued once intake starts, local until then
+                    syncStatus: (streamState.intakeId ?? record.recordId)
+                      ? (record.syncStatus ?? 'queued')
+                      : 'local',
+                    // Language: derive display label from speakerLanguage once intake starts
+                    language: record.language || (
+                      (streamState.intakeId ?? record.recordId)
+                        ? LANG_LABELS[speakerLanguage] ?? speakerLanguage
+                        : ''
+                    ),
                   }}
                   minor={minor}
                   justPopulatedKey={justPopulated}
@@ -1424,6 +1772,7 @@ function App() {
           onResolved={() => {
             setCrisisOpen(false);
             setCrisisMessage(null);
+            pendingPostCrisisRef.current?.(); pendingPostCrisisRef.current = null;
             logCall({ name: "crisis.resolve", args: { outcome: "referral_provided" } },
                     timerRunning ? timerSec * 1000 : 0);
             if (streamState.intakeId) {
@@ -1437,6 +1786,7 @@ function App() {
           onDeEscalated={() => {
             setCrisisOpen(false);
             setCrisisMessage(null);
+            pendingPostCrisisRef.current?.(); pendingPostCrisisRef.current = null;
             logCall({ name: "crisis.resolve", args: { outcome: "de_escalated" } },
                     timerRunning ? timerSec * 1000 : 0);
             if (streamState.intakeId) {
@@ -1449,8 +1799,8 @@ function App() {
         />
       )}
 
-      {/* DemoDock + reopen pill — hidden in presentation mode */}
-      {demoDockVisible && !presentationActive && (
+      {/* DemoDock + reopen pill — hidden in presentation mode and without ?dev=1 */}
+      {devMode && demoDockVisible && !presentationActive && (
         <DemoDock
           visible={demoDockVisible}
           onStart={runDemo}
@@ -1466,11 +1816,8 @@ function App() {
           onRunMariam={runMariam}
         />
       )}
-      {!demoDockVisible && !presentationActive && (
-        <DemoReopenPill onOpen={() => setDemoDockVisible(true)} />
-      )}
 
-      {/* ShortcutHint — hidden in presentation mode */}
+{/* ShortcutHint — hidden in presentation mode */}
       {!presentationActive && <ShortcutHint isMac={isMac} />}
 
       {/* PresenterHUD — below 1080p safe-area crop */}

@@ -53,6 +53,7 @@ export type VoicePhaseResult = {
   isCrisis: boolean;
   onBegin: () => void;
   onStop: () => void;
+  onForceRecording: () => void;
   onSaved: () => void;
   reset: () => void;
 };
@@ -72,6 +73,7 @@ type Action =
   | { type: 'SAVED' }
   | { type: 'MIC_RECORDING' }
   | { type: 'MIC_ERROR' }
+  | { type: 'FORCE_RECORDING' }
   | { type: 'STRUCTLOG_BATCH'; sawToolCallInvoked: boolean; sawCrisisPathTaken: boolean; newCount: number }
   | { type: 'AUDIT_BATCH'; sawIntakeCreated: boolean; newCount: number }
   | { type: 'POST_RESOLVED'; status: PostStatus };
@@ -118,6 +120,14 @@ function reducer(state: State, action: Action): State {
       return { ...INITIAL_STATE };
 
     case 'MIC_RECORDING':
+      if (state.phase === 'awaiting') {
+        return { ...state, phase: 'recording' };
+      }
+      return state;
+
+    case 'FORCE_RECORDING':
+      // Demo file path: no mic involved. Jump awaiting → recording so
+      // the waveform animates while the backend pipeline processes.
       if (state.phase === 'awaiting') {
         return { ...state, phase: 'recording' };
       }
@@ -249,6 +259,7 @@ export function useVoicePhase(inputs: VoicePhaseInputs): VoicePhaseResult {
 
   const onBegin = useCallback(() => dispatch({ type: 'BEGIN' }), []);
   const onStop = useCallback(() => dispatch({ type: 'STOP' }), []);
+  const onForceRecording = useCallback(() => dispatch({ type: 'FORCE_RECORDING' }), []);
   const onSaved = useCallback(() => dispatch({ type: 'SAVED' }), []);
   const reset = useCallback(() => dispatch({ type: 'RESET' }), []);
 
@@ -257,6 +268,7 @@ export function useVoicePhase(inputs: VoicePhaseInputs): VoicePhaseResult {
     isCrisis: state.isCrisis,
     onBegin,
     onStop,
+    onForceRecording,
     onSaved,
     reset,
   };

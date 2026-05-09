@@ -28,6 +28,8 @@ from integration.extraction_tools import (
 )
 from integration.storage_adapter import StorageAdapter
 from integration.transcription_pipeline import (
+    _detect_present_status,
+    _ensure_primary_in_roster,
     _map_extraction_to_intake,
     _to_rfl_record,
     ingest_audio,
@@ -282,7 +284,11 @@ async def test_extend_path_preserves_populated_roster_on_empty_turn(
         ollama=turn1_ollama,
         storage=storage,
     )
-    assert len(record1.family_roster) == 2
+    # _ensure_primary_in_roster prepends Carlos → 3 entries total.
+    assert len(record1.family_roster) == 3
+    assert record1.family_roster[0].name == "Carlos"
+    assert record1.family_roster[1].name == "Lucia"
+    assert record1.family_roster[2].name == "Pedro"
 
     # Turn 2: adds age only; family_members absent → maps to [] → filter drops it.
     turn2_ollama = _OllamaStub(
@@ -304,9 +310,11 @@ async def test_extend_path_preserves_populated_roster_on_empty_turn(
 
     assert record2.id == record1.id
     assert record2.age == 8
-    assert len(record2.family_roster) == 2
-    assert record2.family_roster[0].name == "Lucia"
-    assert record2.family_roster[1].name == "Pedro"
+    # Full 3-entry roster survives the extend turn.
+    assert len(record2.family_roster) == 3
+    assert record2.family_roster[0].name == "Carlos"
+    assert record2.family_roster[1].name == "Lucia"
+    assert record2.family_roster[2].name == "Pedro"
 
 
 # ─── 7. _to_rfl_record maps family_roster + searcher into RFLRecord ─
@@ -351,3 +359,197 @@ def test_to_rfl_record_maps_family_roster_and_searcher_fields() -> None:
     assert rfl.family_roster[0].name == "مريم"
     assert rfl.family_roster[0].name_transliteration == "Mariam"
     assert rfl.family_roster[0].age == 32
+
+
+# ─── 8. _ensure_primary_in_roster prepends primary when absent ──────
+
+
+def test_ensure_primary_in_roster_prepends_when_absent() -> None:
+    """When full_name is not in family_members, it is prepended at index 0."""
+    args = ExtractIntakeFieldsArgs(
+        full_name="يوسف",
+        relationship="أخ",
+        age=41,
+        family_members=[
+            FamilyMemberArg(name="محمد", relationship_to_searcher="ابن", age=8),
+        ],
+    )
+    result = _ensure_primary_in_roster(args)
+
+    assert result.family_members is not None
+    assert len(result.family_members) == 2
+    assert result.family_members[0].name == "يوسف"
+    assert result.family_members[0].relationship_to_searcher == "أخ"
+    assert result.family_members[0].status == "missing"
+    assert result.family_members[0].age == 41
+    assert result.family_members[1].name == "محمد"
+
+
+# ─── 9. _ensure_primary_in_roster is idempotent when primary present ─
+
+
+def test_ensure_primary_in_roster_idempotent_when_already_present() -> None:
+    """When full_name is already in family_members, no duplication occurs."""
+    args = ExtractIntakeFieldsArgs(
+        full_name="يوسف",
+        relationship="أخ",
+        family_members=[
+            FamilyMemberArg(name="يوسف", relationship_to_searcher="أخ", status="missing"),
+            FamilyMemberArg(name="محمد", relationship_to_searcher="ابن", status="missing"),
+        ],
+    )
+    result = _ensure_primary_in_roster(args)
+
+    assert result.family_members is not None
+    assert len(result.family_members) == 2
+    names = [m.name for m in result.family_members]
+    assert names.count("يوسف") == 1
+
+
+# ─── 10. Mariam Arabic intake: both Yusuf and Mohamad in roster ─────
+
+
+@pytest.mark.asyncio
+async def test_mariam_arabic_two_missing_persons_both_in_roster(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for the Mariam demo bug: Gemma puts Yusuf in
+    full_name only and Mohamad in family_members only. After
+    _ensure_primary_in_roster, both appear in family_roster.
+    """
+    storage = _adapter(tmp_path)
+    audio = _audio(tmp_path)
+
+    ollama = _OllamaStub(
+        english=(
+            "I am Mariam. I am looking for my brother Yusuf "
+            "and my son Mohamad, age 8."
+        ),
+        tool_call_response=ToolCallResult(
+            name="extract_intake_fields",
+            arguments={
+                "full_name": "يوسف",
+                "relationship": "أخ",
+                "searcher_name": "مريم",
+                "searcher_relationship_to_target": "أخت",
+                "last_seen_location": "البوابة الجنوبية",
+                "last_seen_date": "قبل ثلاثة أيام",
+                "family_members": [
+                    {
+                        "name": "محمد",
+                        "relationship_to_searcher": "ابن",
+                        "status": "missing",
+                        "age": 8,
+                    }
+                ],
+            },
+        ),
+    )
+
+    record, _ = await ingest_audio(
+        audio,
+        "ar",
+        "tent_a",
+        whisper=_WhisperStub(
+            "أنا مريم أبحث عن أخي يوسف وابني محمد عمره 8 سنوات "
+            "فقدنا قبل ثلاثة أيام عند البوابة الجنوبية"
+        ),
+        ollama=ollama,
+        storage=storage,
+    )
+
+    assert record.full_name_source_script == "يوسف"
+    assert record.searcher_name == "مريم"
+    assert record.last_seen_location == "البوابة الجنوبية"
+
+    # Both missing persons must be in the roster.
+    assert len(record.family_roster) == 2
+    roster_names = {m.name for m in record.family_roster}
+    assert "يوسف" in roster_names
+    assert "محمد" in roster_names
+
+    mohamad = next(m for m in record.family_roster if m.name == "محمد")
+    assert mohamad.age == 8
+    assert mohamad.status == "missing"
+
+
+# ─── 11. Single-entity Carlos: family_roster has exactly 1 entry ────
+
+
+@pytest.mark.asyncio
+async def test_single_missing_person_carlos_roster_has_one_entry(
+    tmp_path: Path,
+) -> None:
+    """Single-entity case: _ensure_primary_in_roster appends Carlos as
+    the sole roster entry. No regression from the existing Carlos happy-path.
+    """
+    storage = _adapter(tmp_path)
+    audio = _audio(tmp_path)
+
+    ollama = _OllamaStub(
+        english="I am looking for my son Carlos.",
+        tool_call_response=ToolCallResult(
+            name="extract_intake_fields",
+            arguments={"full_name": "Carlos", "relationship": "hijo"},
+        ),
+    )
+
+    record, _ = await ingest_audio(
+        audio,
+        "es",
+        "tent_a",
+        whisper=_WhisperStub("Estoy buscando a mi hijo Carlos."),
+        ollama=ollama,
+        storage=storage,
+    )
+
+    assert record.full_name_source_script == "Carlos"
+    assert len(record.family_roster) == 1
+    assert record.family_roster[0].name == "Carlos"
+    assert record.family_roster[0].relationship_to_searcher == "hijo"
+    assert record.family_roster[0].status == "missing"
+
+
+# ─── 12. _detect_present_status tags co-located member as present ───
+
+
+def test_detect_present_status_tags_aisha_present() -> None:
+    """Yusuf demo case: 'زوجتي عائشة معي' → Aisha status='present'."""
+    args = ExtractIntakeFieldsArgs(
+        full_name="مريم",
+        relationship="أخت",
+        family_members=[
+            FamilyMemberArg(name="مريم", relationship_to_searcher="أخت", status="missing"),
+            FamilyMemberArg(name="محمد", relationship_to_searcher="ابن أخت", status="missing"),
+            FamilyMemberArg(name="عائشة", relationship_to_searcher="زوجة", status="missing"),
+        ],
+    )
+    transcription = "أبحث عن أختي مريم وابن أختي محمد، زوجتي عائشة معي"
+
+    result = _detect_present_status(args, transcription)
+
+    assert result.family_members is not None
+    by_name = {m.name: m for m in result.family_members}
+    assert by_name["عائشة"].status == "present"
+    assert by_name["مريم"].status == "missing"
+    assert by_name["محمد"].status == "missing"
+
+
+# ─── 13. _detect_present_status leaves status unchanged when no marker ─
+
+
+def test_detect_present_status_no_marker_leaves_missing() -> None:
+    """No presence marker near the name → status stays 'missing'."""
+    args = ExtractIntakeFieldsArgs(
+        full_name="عائشة",
+        relationship="زوجة",
+        family_members=[
+            FamilyMemberArg(name="عائشة", relationship_to_searcher="زوجة", status="missing"),
+        ],
+    )
+    transcription = "أبحث عن عائشة"  # no presence marker
+
+    result = _detect_present_status(args, transcription)
+
+    assert result.family_members is not None
+    assert result.family_members[0].status == "missing"

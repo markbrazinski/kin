@@ -104,32 +104,35 @@ export const DEFAULT_NETWORK_RESULT: NetworkMatchResult = {
   matched: true,
   node_matches: [
     {
+      // Mohamad is missingPersons[1] on Yusuf's side, missingPersons[1] on Mariam's side.
+      // name-based lookup via missingPersonNode handles both.
       role_a: 'missing_person', role_b: 'missing_person',
       name_a: 'محمد', name_b: 'محمد',
-      roster_index_a: null, roster_index_b: 0,
+      roster_index_a: null, roster_index_b: null,
       phonetic_score: 1.0, composite_score: 0.85,
       match_type: 'primary',
     },
     {
-      role_a: 'roster_member', role_b: 'searcher',
+      // Mariam is missingPersons[0] on Yusuf's side; she is the searcher on Mariam's side.
+      role_a: 'missing_person', role_b: 'searcher',
       name_a: 'مريم', name_b: 'مريم',
-      roster_index_a: 0, roster_index_b: null,
+      roster_index_a: null, roster_index_b: null,
       phonetic_score: 1.0, composite_score: 0.85,
       match_type: 'supporting',
     },
     {
+      // Yusuf is the searcher on his own side; he is missingPersons[0] on Mariam's side.
       role_a: 'searcher', role_b: 'missing_person',
       name_a: 'يوسف', name_b: 'يوسف',
       roster_index_a: null, roster_index_b: null,
       phonetic_score: 1.0, composite_score: 0.85,
       match_type: 'supporting',
-      person_type_b: 'roster_member',  // cross-reference, not a primary missing person
     },
   ],
   primary_match: {
     role_a: 'missing_person', role_b: 'missing_person',
     name_a: 'محمد', name_b: 'محمد',
-    roster_index_a: null, roster_index_b: 0,
+    roster_index_a: null, roster_index_b: null,
     phonetic_score: 1.0, composite_score: 0.85,
     match_type: 'primary',
   },
@@ -594,16 +597,18 @@ function MatchGraphV3({
           );
         })}
 
-        {/* Nodes */}
+        {/* Nodes — only the primary-match pair gets green fill */}
         {[
           ...sideANodes.map(n => ({ node: n, pos: posA.get(n.id)! })),
           ...sideBNodes.map(n => ({ node: n, pos: posB.get(n.id)! })),
         ].filter(({ pos }) => pos != null).map(({ node, pos: p }) => {
-          const isMissing = node.person_type === 'missing_person';
+          const primaryEdge = edges.find(e => e.primary);
+          const isPrimary = primaryEdge != null &&
+            (node.id === primaryEdge.aId || node.id === primaryEdge.bId);
 
-          const fill   = isMissing ? 'oklch(0.96 0.03 155)' : '#fff';
-          const stroke = isMissing ? 'oklch(0.55 0.11 155)' : 'oklch(0.88 0.008 85)';
-          const sw     = isMissing ? 1.5 : 1;
+          const fill   = isPrimary ? 'oklch(0.96 0.03 155)' : '#fff';
+          const stroke = isPrimary ? 'oklch(0.55 0.11 155)' : 'oklch(0.88 0.008 85)';
+          const sw     = isPrimary ? 1.5 : 1;
 
           return (
             <g key={node.id} data-testid={`node-${node.id}`}>
@@ -611,7 +616,7 @@ function MatchGraphV3({
                 x={p.x - nodeW / 2} y={p.y - nodeH / 2}
                 width={nodeW} height={nodeH} rx="10"
                 fill={fill} stroke={stroke} strokeWidth={sw}
-                data-testid={isMissing ? 'missing-node-rect' : undefined}
+                data-testid={node.person_type === 'missing_person' ? 'missing-node-rect' : undefined}
               />
               {/* Latin name — primary typography */}
               <text x={p.x} y={p.y - 12} textAnchor="middle"

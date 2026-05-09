@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class FamilyMemberArg(BaseModel):
@@ -45,16 +45,31 @@ class FamilyMemberArg(BaseModel):
     age: int | None = None
     last_seen_location: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_full_name_to_name(cls, data: Any) -> Any:
+        """Gemma sometimes emits 'full_name' instead of 'name' in nested
+        family_members objects, mirroring the outer schema's field name.
+        Remap before validation so both keys are accepted.
+        """
+        if isinstance(data, dict) and "name" not in data and "full_name" in data:
+            data = {**data, "name": data["full_name"]}
+        return data
+
 
 EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "extract_intake_fields",
         "description": (
-            "Extract intake fields about a missing person from the speaker's "
-            "statement. Each turn of audio may carry only some fields; emit "
-            "null (not an empty string, not a guess) for any field the "
-            "speaker did not explicitly state in this utterance."
+            "Extract intake fields from the speaker's statement about one or "
+            "more missing persons. The speaker is always the searcher — never "
+            "a missing person. full_name is the primary missing-person target "
+            "(whoever the speaker names first or emphasizes most). "
+            "family_members must list EVERY missing person the speaker names, "
+            "including whoever is in full_name. Each turn may carry only some "
+            "fields; emit null (not an empty string, not a guess) for any "
+            "field not explicitly stated in this utterance."
         ),
         "parameters": {
             "type": "object",
@@ -85,7 +100,8 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
                     "description": (
                         "Where the speaker last saw the missing person "
                         "(e.g., 'Tapachula bus terminal', 'border with "
-                        "Colombia', 'el cruce de la frontera'); null if not "
+                        "Colombia', 'el cruce de la frontera', "
+                        "'البوابة الجنوبية', 'مخيم الزعتري'); null if not "
                         "stated. Preserve the speaker's source language."
                     ),
                 },
@@ -135,10 +151,14 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
                 "family_members": {
                     "type": ["array", "null"],
                     "description": (
-                        "Other family members the speaker mentions beyond the "
-                        "primary missing-person target. Emit null (not an "
-                        "empty array) if the speaker names no additional "
-                        "members in this utterance."
+                        "ALL missing persons the speaker names, including "
+                        "whoever is in full_name. Example: if the speaker "
+                        "says 'I am looking for my brother Yusuf and my son "
+                        "Mohamad (age 8)', then full_name='يوسف' AND "
+                        "family_members must contain both يوسف (brother, "
+                        "missing) AND محمد (son, missing, age 8). Emit null "
+                        "(not an empty array) only when the speaker names "
+                        "zero missing persons by name."
                     ),
                     "items": {
                         "type": "object",
@@ -167,12 +187,18 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
                                 "description": (
                                     "Whether this member is missing, known "
                                     "to be safe, or present with the "
-                                    "searcher."
+                                    "searcher. Detect from context: "
+                                    "'is with me' / 'معي' / 'still with me' "
+                                    "/ 'هو معي' / 'is here with us' / "
+                                    "'are still safe' → 'present'. "
+                                    "'is missing' / 'مفقود' / "
+                                    "'I am looking for' → 'missing'. "
+                                    "Default if unstated: 'missing'."
                                 ),
                             },
                             "age": {
-                                "type": "integer",
-                                "description": "Age in years if stated.",
+                                "type": ["integer", "null"],
+                                "description": "Age in years if stated; null if not stated.",  # noqa: E501
                             },
                             "last_seen_location": {
                                 "type": "string",

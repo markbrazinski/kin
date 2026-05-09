@@ -89,11 +89,21 @@ export function mapAuditEventToRecord(
   const rawValue = details.value;
   if (rawValue === null || rawValue === undefined) return record;
 
-  // Array fields: store the raw array value without string coercion.
+  // Array fields: map backend shape → frontend FamilyMember shape.
   const arrayKey = ARRAY_FIELD_MAP[fieldName];
   if (arrayKey) {
     if (!Array.isArray(rawValue)) return record;
-    return { ...record, [arrayKey]: rawValue as FamilyMember[] };
+    const members: FamilyMember[] = rawValue.map((m: Record<string, unknown>) => ({
+      name: (m.name as string) ?? '',
+      nameLatin: (m.name_transliteration as string | null) ?? undefined,
+      age: (m.age as number | null) ?? undefined,
+      relationship: (m.relationship_to_searcher as string) ?? '',
+      status: m.status === 'present' ? 'WITH_SEARCHER'
+            : m.status === 'missing' ? 'MISSING'
+            : 'UNKNOWN',
+      lastSeen: (m.last_seen_location as string | null) ?? undefined,
+    }));
+    return { ...record, [arrayKey]: members };
   }
 
   const targetKey = FIELD_MAP[fieldName];

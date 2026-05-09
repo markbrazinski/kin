@@ -21,6 +21,7 @@ Inherits two non-negotiable findings from Day 4 Session 4
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, cast
 
 import ollama  # for ResponseError + RequestError, retried in translate()
@@ -62,6 +63,12 @@ OPTIONS: dict[str, Any] = {
     "temperature": 0.1,
     "num_predict": 400,
 }
+_demo_temp_raw = os.getenv("KIN_DEMO_TEMPERATURE")
+if _demo_temp_raw is not None:
+    try:
+        OPTIONS["temperature"] = float(_demo_temp_raw)
+    except ValueError:
+        pass  # malformed value → keep default 0.1
 
 
 def _build_translate_prompt(text: str, source_lang: SupportedLang) -> str:

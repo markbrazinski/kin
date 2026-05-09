@@ -375,4 +375,219 @@ This unblocks Beat 6 of the demo storyboard. Without Bundle 2, Beat 6 cannot rec
 
 The runtime spine — SSE pipeline, two-panel split view, mic capture, extend path, crisis branch with Gemma escalate_crisis tool, Beat 6 merge animation, integration smoke for both extend and crisis paths — is shipped. Demo-day infrastructure ready to record. Bundle 1.5 (Round 2 nav refactor) drafts next.
 
-**End HANDOFF.**
+---
+
+---
+
+# HANDOFF — Bundle 2 + Mariam Eval Session (May 6, 2026)
+
+**Last updated:** May 6, 2026  
+**Head commit:** `17c5c50` — squash of 14 bundle2 sessions, pushed to GitHub  
+**Agent:** Claude Sonnet 4.6 (this session)  
+**Next agent task:** prompt and schema tuning — see Priority 1 below
+
+---
+
+## What happened this session
+
+### 1. Squash push to GitHub
+
+14 bundle2 commits (S20–S26B + live-gaps) were squashed into one commit (`17c5c50`) and pushed. Also pushed:
+- README rewritten (see below)
+- `.gitignore` updated: `storage.bak.*/`, `memory/`, `.env*` added
+- 9 eval scripts added to `scripts/` (previously untracked)
+- Stale `storage/` records cleaned (see "Storage state" below)
+
+### 2. README rewritten
+
+`README.md` was replaced with a document targeting three audiences simultaneously: hackathon judges (technical depth, eval portfolio), Fiverr talent vetting legitimacy, and humanitarian practitioners receiving cold outreach. Key commitments: uses "prototype" 8 times, names what's not built (ProGres/RAIS/BIMS connections, wrong-match recovery, formal threat model), links to `results/` for eval artifacts, and closes with open questions directed at practitioners.
+
+### 3. Mariam voice recording evaluation
+
+Two takes of female Levantine Arabic Fiverr VO (`audio_samples/demo_samples/`) were run through the full pipeline. The evaluation script is at `scripts/test_mariam_takes.py`. It is reusable — change `TAKES` at the top to point at new files.
+
+**Pipeline path tested:** Whisper medium (int8, CPU) → ffmpeg head-silence padding → Gemma 4 E2B `extract_intake_fields` tool call → `ingest_audio` → `StorageAdapter` persistence → matcher → audit events.
+
+---
+
+## Mariam eval results (full detail — next agent reads this)
+
+### Whisper transcription (both takes)
+
+Both takes: Arabic detected at language_probability=1.0. Whisper latency ~7-9s (within budget). ffmpeg padding applied correctly (adelay=1000|1000,apad=pad_dur=0.5).
+
+| | Take 1 | Take 2 |
+|---|---|---|
+| Transcription | أنا مريم العمر عمر 32 سنة أبحث عن أخ يوسف وابن محمد عمره 8 سنوات فقدنا قبل ثلاثة أيام عند البوابة الجنوبية محمد عنده **نذبة فوق حجبه** الأيسر | أنا مريم **أمر** عمري 32 سنة أبحث عن أخي يوسف وابن محمد عمره 8 سنوات فقدنا قبل ثلاثة أيام عند البوابة الجنوبية محمد عنده **ندبة فوق حاجبه** الأيسر |
+| Rough WER vs. expected | 93.1% | 89.7% |
+| يوسف (Yusuf) | ✓ | ✓ |
+| محمد (Mohamad) | ✓ | ✓ |
+| البوابة (gate) | ✓ | ✓ |
+| ندبة (scar) | ✗ (garbled to نذبة) | ✓ |
+
+**WER note:** Both WER numbers look alarming but are misleading. The metric compares against the full formal Arabic with diacritics (فُقدنا, اثنان وثلاثون). Whisper transcribes without diacritics — that accounts for most of the "errors." Content accuracy is much better than the percentages suggest.
+
+**Take 1 critical flaw:** "scar" (ندبة) garbled to نذبة and "eyebrow" (حاجبه) garbled to حجبه. Gemma faithfully carried both garbled words into the extracted record. The distinguishing mark populated but with wrong Arabic.
+
+**Take 2:** ندبة and حاجبه correct. This is the demo take. "عمر" dropped one word ("العمر" → "أمر" — "Al-Omar" became "Amr") but Gemma still extracted `searcher_name: مريم` correctly.
+
+### Gemma extraction (tool call arguments — logged verbatim)
+
+**Take 1 tool_args:**
+```json
+{
+  "age": 32,
+  "distinguishing_features": "نذبة فوق حجبه الأيسر",
+  "full_name": "يوسف",
+  "last_seen_date": "قبل ثلاثة أيام",
+  "last_seen_location": "البوابة الجنوبية",
+  "relationship": "أخ",
+  "searcher_name": "مريم",
+  "searcher_relationship_to_target": null,
+  "family_members": [{"name": "محمد", "relationship_to_searcher": "ابن"}]
+}
+```
+
+**Take 2 tool_args:**
+```json
+{
+  "age": 32,
+  "distinguishing_features": "ندبة فوق حاجبه الأيسر",
+  "family_members": [{"name": "محمد", "relationship_to_searcher": "ابن"}],
+  "full_name": "يوسف",
+  "last_seen_date": "قبل ثلاثة أيام",
+  "searcher_name": "مريم",
+  "searcher_relationship_to_target": "أخت"
+  // last_seen_location MISSING on Take 2
+}
+```
+
+Extraction latency: ~1.3–1.6s (tool call). Total pipeline: ~12-17s end-to-end (Whisper runs twice — once in standalone evaluation step, once inside `ingest_audio`; in production it runs once).
+
+### Field-level findings
+
+| Field | Expected | Take 1 | Take 2 |
+|---|---|---|---|
+| searcher_name | مريم (العمر) | مريم ✓ | مريم ✓ |
+| searcher age | 32 | 32 ✓ | 32 ✓ |
+| full_name (primary target) | يوسف | يوسف ✓ | يوسف ✓ |
+| relationship | أخ (brother) | أخ ✓ | — (omitted) |
+| age (primary target) | 41 (not in audio) | — (correct abstention) | — ✓ |
+| last_seen_location | البوابة الجنوبية | ✓ | **MISSING** |
+| last_seen_date | قبل ثلاثة أيام | ✓ | ✓ |
+| distinguishing_features | ندبة فوق حاجبه الأيسر | **garbled** | ✓ |
+| family_members[0] | محمد, ابن | ✓ | ✓ |
+| family_members[1] | يوسف as roster member | ✗ MISSING | ✗ MISSING |
+
+**Structural issue — the core problem for next agent:** The tool schema treats one person as the "primary" target (`full_name`, `relationship`, `age`, `last_seen_location`) and puts others in `family_members`. Mariam's utterance names two people (Yusuf = brother, Mohamad = son). Gemma is routing Yusuf to the primary slot and Mohamad to `family_members` — which is reasonable given the schema shape, but it means only 1 roster member, not 2. Yusuf should also appear in `family_members` since both are being searched for.
+
+This is a **schema design problem, not an audio quality problem.** The audio is fine. The schema incentivizes Gemma to pick one primary and orphan the rest.
+
+### Audit events
+
+Both takes fired: `intake_created`, `field_extracted` (8 events on Take 1, 7 on Take 2), `match_proposed`. All expected types present.
+
+### Matching
+
+Both takes matched against previously-run test records in storage (the eval script ran 4 times during debugging — storage accumulated records). The matcher fired correctly. Confidence score: 1.000 (Take 1) / 0.850 (Take 2, missing location field lowered score). Primary node match: `محمد ↔ محمد`, composite_score=0.85.
+
+There was no pre-loaded Yusuf record at `KIN-2026-0042` — that was a placeholder in the eval script. Matching worked against the accumulated eval records instead.
+
+### Recommended take
+
+**Take 2.** Scar transcribed correctly, lower WER, single Whisper segment (cleaner pacing — Take 1 produced 4 segments suggesting a pause or breath mid-utterance). The `last_seen_location` miss on Take 2 is a Gemma extraction inconsistency at temperature=0.1, not an audio issue — it populated on all Take 1 runs.
+
+### Storage state after this session
+
+Two pre-S21 stale records were found and removed from `storage/`:
+- `intake_records.jsonl` line 6: `status: "paused_for_crisis"` — removed (status enum no longer includes this value after S21)
+- `audit_events.jsonl` line 2: `event_type: "intake_paused"` — removed (same reason)
+
+Storage now has accumulated eval records from the 4 debug runs of the Mariam evaluation. **These are junk records** — run `python -c "from pathlib import Path; [f.write_text('') for f in Path('storage').glob('*.jsonl')]"` to clear storage before the demo, or re-seed from `scripts/seed_demo_fixtures.py`.
+
+---
+
+## Priority 1 for next agent: schema and prompt tuning
+
+This is the highest-leverage work before demo recording. Two distinct problems:
+
+### Problem A: Yusuf missing from family_members roster
+
+**What happens:** Speaker says "أبحث عن أخي يوسف وابني محمد" (I'm looking for my brother Yusuf and my son Mohamad). Gemma routes Yusuf to the primary `full_name` slot and Mohamad to `family_members[0]`. Yusuf does not appear in `family_members`. Result: roster shows 1 member, not 2.
+
+**Why it matters for the demo:** The network match graph (NetworkMatch.tsx) and match audit panel are designed to show multiple nodes. A single roster member produces a sparse graph. The "Mohamad scar" beat is the wow moment — it needs Mohamad AND Yusuf in the roster to fire correctly.
+
+**Likely fix options (next agent decides):**
+1. **Prompt change:** Add an explicit instruction to the tool description: "If the speaker names multiple missing persons, list ALL of them in `family_members`, including the primary one. The `full_name` field identifies which person the speaker is primarily searching for; `family_members` is the complete roster of people being sought."
+2. **Schema change:** Flatten the schema — remove the primary `full_name`/`relationship`/`age` trio and make `family_members` the only list. The "primary" distinction moves to a `is_primary: bool` field on each `FamilyMemberArg`. This is a larger change but removes the structural incentive to orphan roster members.
+3. **Post-processing:** After Gemma returns args, if `full_name` is set and not already in `family_members`, append it. This is a hack but surgical.
+
+Option 1 is the fastest to test. Try it first against the Take 2 audio before touching the schema.
+
+**File to edit:** `src/integration/extraction_tools.py` — `EXTRACT_INTAKE_FIELDS_TOOL["function"]["description"]` and/or `family_members["description"]`.
+
+### Problem B: last_seen_location missing on Take 2
+
+**What happens:** Take 2 produces `last_seen_location: null` despite the speaker clearly saying "عند البوابة الجنوبية" (at the southern gate). Take 1 extracts it correctly. Both runs use the same audio file, temperature=0.1.
+
+**Why it matters:** `last_seen_location` populates the record card and affects match scoring. A miss drops confidence_score from 1.000 to 0.850 and changes status from "complete" to "partial".
+
+**Likely fix:** The `last_seen_location` field description currently uses Latin-script examples only ("Tapachula bus terminal", "border with Colombia"). Add an Arabic example: `'البوابة الجنوبية'`, `'مخيم الزعتري'`. Gemma is sensitive to example phrasing when extracting non-Latin script values.
+
+**File to edit:** `src/integration/extraction_tools.py` line 83–91 — `last_seen_location["description"]`.
+
+---
+
+## Priority 2: eval script cleanup
+
+`scripts/test_mariam_takes.py` is functional but has one inefficiency: it calls Whisper twice per take — once in the standalone evaluation step (section [1]) and once inside `ingest_audio` (which re-runs Whisper internally). This doubles transcription time for no reason. 
+
+**Fix:** Pass the pre-computed transcription into `ingest_audio` somehow, or remove the standalone Whisper call and read the transcription out of the `TranscriptionResult` returned from the pipeline. Check `transcription_pipeline.py` — `ingest_audio` returns `(IntakeRecord, str | None)` not the intermediate `TranscriptionResult`, so you'd need to either (a) add a return value or (b) log the transcription and read from structured logs. Easiest short-term: just accept the double-transcription, it's an eval script not production.
+
+---
+
+## Priority 3: storage seed before demo recording
+
+`scripts/seed_demo_fixtures.py` exists but may not seed Yusuf's record with the correct ID (`KIN-2026-0042`) expected by the demo flow. Verify it seeds:
+- Yusuf al-Omar record (searcher: Mariam, target: Yusuf, age ~41, last_seen: southern gate)
+- With a stable, predictable record ID the UI can reference
+
+Then clear accumulated junk eval records and re-seed cleanly before demo recording.
+
+---
+
+## Key files for prompt/schema work
+
+| File | Purpose |
+|---|---|
+| `src/integration/extraction_tools.py` | `EXTRACT_INTAKE_FIELDS_TOOL` JSON schema dict. All prompt text for Gemma's extraction tool is here. |
+| `src/integration/transcription_pipeline.py` | `ingest_audio()` orchestrator. Calls Whisper → safety classify → Gemma translate → Gemma tool_call → persist. ~849 lines. |
+| `src/integration/ollama_adapter.py` | `OllamaAdapter.tool_call()` and `translate()`. Uses sync `ollama.Client()` wrapped in `asyncio.to_thread`. Temperature=0.1, num_ctx=8000, num_predict=400. |
+| `src/core/storage_schemas.py` | `IntakeRecord` fields. Key: `searcher_name: str`, `age: int|None`, `last_seen_location: str|None`, `distinguishing_marks: str|None`, `family_roster: list[FamilyMember]`. |
+| `src/core/rfl_schema.py` | `FamilyMember` model. Fields: `name: str`, `name_transliteration: str|None`, `relationship_to_searcher: str`. No `age` field on roster members currently. |
+| `scripts/test_mariam_takes.py` | Evaluation harness for new audio takes. Update `TAKES` list and rerun. |
+| `audio_samples/demo_samples/` | `Arabic VO_Mariam_take 1 demo.wav`, `Arabic VO_Mariam_take 2 demo.wav`. Take 2 is recommended. |
+
+---
+
+## Do not touch this session
+
+- `src/core/safety_rules.py` — safety gate is not the problem
+- `src/integration/whisper_adapter.py` — Whisper is performing correctly
+- Anything in `src/ui/` — UI is not the problem
+- The `ollama.Client()` vs `ollama.AsyncClient()` choice — adapter uses `asyncio.to_thread` with a sync client by design; do not switch to AsyncClient
+
+---
+
+## Critical reminders (carry forward)
+
+1. **No `git push` without explicit Mark instruction.**
+2. **Plan-approve-execute:** never execute without an approved plan.
+3. **`safety_rules.classify` is the sole safety gate.** Gemma is formatter on crisis path only.
+4. **Source-language preservation is architectural.** Store Arabic in Arabic. Do not translate to English on storage.
+5. **Model is `gemma4:e2b`.** Do not substitute E4B, 26B, or 31B.
+6. **FastAPI binds to 127.0.0.1 only.** Never 0.0.0.0.
+7. **Commit prefix:** `bundle2-S{n}:` for new sessions in this bundle.
+8. **No `git push` without explicit Mark instruction.** (Repeated intentionally — this one matters.)
+
+**End Bundle 2 / Mariam eval session handoff.**

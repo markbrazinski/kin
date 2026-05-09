@@ -35,6 +35,29 @@ export async function uploadAudioBlob(opts: {
   return (await res.json()) as AudioUploadResponse;
 }
 
+export async function postDemoRunIntake(opts: {
+  filename: 'yusuf' | 'mariam';
+  lang?: string;
+  sourceDeviceId?: string;
+  intakeId?: string | null;
+}): Promise<AudioUploadResponse> {
+  const res = await fetch('/demo/run-intake', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filename: opts.filename,
+      lang: opts.lang ?? 'ar',
+      source_device_id: opts.sourceDeviceId ?? 'laptop',
+      intake_id: opts.intakeId ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`demo intake failed: ${res.status} ${text}`);
+  }
+  return (await res.json()) as AudioUploadResponse;
+}
+
 export async function postCrisisResolved(opts: {
   intakeId: string;
   resolution: 'referral_provided' | 'de_escalated';

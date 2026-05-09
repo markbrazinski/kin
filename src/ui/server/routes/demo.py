@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import structlog
@@ -225,4 +225,100 @@ async def seed_fixture(body: SeedFixtureRequest, request: Request) -> dict[str, 
         "record_id": str(record.id),
         "status": record.status,
         "language": record.language,
+    }
+
+
+# ─── POST /demo/run-intake ────────────────────────────────────────────────────
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+
+_DEMO_AUDIO: dict[str, Path] = {
+    "yusuf": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_Yusuf_take_1_demo.mp3",
+    "mariam": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_Mariam_take 2 demo.wav",
+}
+
+
+class DemoRunIntakeBody(BaseModel):
+    filename: Literal["yusuf", "mariam"]
+    lang: str = "ar"
+    source_device_id: str = "laptop"
+    intake_id: str | None = None
+
+
+@router.post("/demo/run-intake")
+async def demo_run_intake(
+    body: DemoRunIntakeBody, request: Request
+) -> dict[str, Any]:
+    """Run the real ingest pipeline on a pre-recorded demo audio file.
+
+    Resolves the filename alias to a path on disk and calls ingest_audio()
+    exactly as /intake/audio does. Returns the same AudioUploadResponse
+    shape so the frontend demo path is indistinguishable from a live intake.
+
+    Returns 503 when pipeline adapters are unavailable (KIN_DISABLE_WARMUP=1).
+    Returns 404 when the resolved audio file does not exist on disk.
+    Returns 422 when Gemma cannot extract intake fields (InvalidToolCall).
+    """
+    from integration._errors import InvalidToolCall
+    from integration.transcription_pipeline import ingest_audio
+
+    whisper = request.app.state.whisper
+    ollama = request.app.state.ollama
+    storage = request.app.state.storage
+    if None in (whisper, ollama, storage):
+        raise HTTPException(
+            status_code=503,
+            detail="pipeline adapters unavailable; server started with KIN_DISABLE_WARMUP=1",
+        )
+
+    audio_path = _DEMO_AUDIO[body.filename]
+    if not audio_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"demo audio file not found: {audio_path}",
+        )
+
+    parsed_intake_id: UUID | None = None
+    if body.intake_id:
+        try:
+            parsed_intake_id = UUID(body.intake_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"invalid intake_id: {exc}"
+            ) from exc
+
+    log.info(
+        "demo_run_intake_start",
+        filename=body.filename,
+        audio_path=str(audio_path),
+        lang=body.lang,
+        source_device_id=body.source_device_id,
+    )
+
+    try:
+        record, locale_message = await ingest_audio(
+            audio_path=audio_path,
+            lang=body.lang,
+            source_device_id=body.source_device_id,
+            whisper=whisper,
+            ollama=ollama,
+            storage=storage,
+            intake_id=parsed_intake_id,
+        )
+    except InvalidToolCall as exc:
+        log.warning(
+            "demo_intake_no_tool_call",
+            filename=body.filename,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=422,
+            detail="Audio transcribed but Gemma could not extract intake fields.",
+        ) from exc
+
+    return {
+        "intake_id": str(record.id),
+        "status": record.status,
+        "is_crisis": record.is_crisis,
+        "locale_aware_message": locale_message if record.is_crisis else None,
     }

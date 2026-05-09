@@ -13,6 +13,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from integration._errors import InvalidToolCall
 from integration.transcription_pipeline import (
     _maybe_retrigger_matching,
     ingest_audio,
@@ -124,15 +125,29 @@ async def upload_audio(
             capture_output=True,
         )
 
-        record, locale_message = await ingest_audio(
-            audio_path=wav_path,
-            lang=lang,
-            source_device_id=source_device_id,
-            whisper=whisper,
-            ollama=ollama,
-            storage=storage,
-            intake_id=parsed_intake_id,
-        )
+        try:
+            record, locale_message = await ingest_audio(
+                audio_path=wav_path,
+                lang=lang,
+                source_device_id=source_device_id,
+                whisper=whisper,
+                ollama=ollama,
+                storage=storage,
+                intake_id=parsed_intake_id,
+            )
+        except InvalidToolCall as exc:
+            log.warning(
+                "intake_no_tool_call",
+                lang=lang,
+                source_device_id=source_device_id,
+                error=str(exc),
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="Audio was transcribed but Gemma could not extract intake fields. "
+                       "Please try again — the speaker may need to speak more clearly or "
+                       "closer to the microphone.",
+            ) from exc
 
     # Defensive status-gating: ingest_audio only returns a non-None
     # message on the crisis branch, but explicit gating in the

@@ -130,12 +130,16 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "relationship to the missing person, populate "
     "searcher_relationship_to_target."
     "\n\n"
-    "If the speaker mentions additional family members (siblings, "
-    "children, parents) beyond the primary missing-person target, "
-    "populate family_members with one object per person. Each object "
-    "requires name and relationship_to_searcher. Emit null for "
-    "family_members (not an empty array) when no additional members "
-    "are mentioned in this utterance."
+    "Populate family_members with ALL missing persons the speaker "
+    "names — this includes whoever is in full_name. If the speaker "
+    "names a brother AND a son as missing, both appear in "
+    "family_members (one entry each), and full_name holds the one "
+    "they name first or emphasize most. Each entry requires name, "
+    "relationship_to_searcher, and status. Set status='present' when "
+    "the speaker says that person 'is with me' / 'معي' / 'is here "
+    "with us' / 'is safe'. Otherwise set status='missing'. "
+    "Emit null for family_members only when the speaker names no "
+    "one at all."
 )
 
 _CRISIS_SYSTEM_PROMPT = (
@@ -280,6 +284,16 @@ async def ingest_audio(
         audio_path, lang, whisper=whisper, ollama=ollama
     )
 
+    # Emit transcription to SSE structlog stream so the transcript strip
+    # in the React UI receives real utterance text (not mock data).
+    log.info(
+        "transcription_chunk",
+        source=result.transcription,
+        translation=result.english_translation,
+        lang=lang,
+        source_device_id=source_device_id,
+    )
+
     # Stage 2: crisis classification on SOURCE text.
     safety = safety_rules.classify(result.transcription, lang=lang)
 
@@ -328,6 +342,9 @@ async def ingest_audio(
         messages=messages, tools=[EXTRACT_INTAKE_FIELDS_TOOL]
     )
     args = ExtractIntakeFieldsArgs(**tool_result.arguments)
+    args = _ensure_primary_in_roster(args)
+    args = _detect_present_status(args, result.transcription)
+    args = _promote_first_missing_to_primary(args)
 
     # Stage 4: map extraction → IntakeRecord fields.
     intake_fields = _map_extraction_to_intake(args, lang)
@@ -565,6 +582,181 @@ def _map_family_members(
     return result
 
 
+def _ensure_primary_in_roster(
+    args: ExtractIntakeFieldsArgs,
+) -> ExtractIntakeFieldsArgs:
+    """Belt-and-suspenders: if full_name is set and not already in
+    family_members, prepend it as a missing-status entry.
+
+    Gemma may follow the schema's primary/secondary split rather than
+    the prompt's instruction to list all missing persons in
+    family_members. This deterministic post-processor closes the gap
+    so the roster always contains every named missing person — no LLM
+    variance on this invariant.
+
+    Single-entity case (one full_name, no family_members): the primary
+    is appended as the sole roster entry, which is correct — that person
+    is missing and the roster is the matching surface.
+    """
+    if args.full_name is None:
+        return args
+
+    existing_names: set[str] = {m.name for m in (args.family_members or [])}
+    if args.full_name in existing_names:
+        return args
+
+    primary = FamilyMemberArg(
+        name=args.full_name,
+        name_transliteration=None,
+        relationship_to_searcher=args.relationship or "",
+        status="missing",
+        age=args.age,
+        last_seen_location=None,
+    )
+    updated = [primary, *(args.family_members or [])]
+    return args.model_copy(update={"family_members": updated})
+
+
+_PRESENCE_MARKERS: frozenset[str] = frozenset({
+    # Arabic
+    "معي", "معنا", "بجانبي", "معايا",
+    # English
+    "with me", "is with me", "with us", "is here", "is safe", "still with me",
+})
+
+_PRESENCE_WINDOW = 12  # characters each side of a marker to search for a name
+
+
+def _detect_present_status(
+    args: ExtractIntakeFieldsArgs,
+    transcription: str,
+) -> ExtractIntakeFieldsArgs:
+    """Deterministic override for family member presence detection.
+
+    Two passes:
+    1. For each existing family_member whose name appears within
+       _PRESENCE_WINDOW characters of a presence marker, override
+       status → 'present'.
+    2. For each presence marker, extract the nearest name-like token
+       in the transcription. If that token is not already in
+       family_members, add a new entry with status='present' and
+       relationship inferred from the token immediately before the
+       name (e.g. 'زوجتي عائشة معي' → relationship='زوجتي').
+
+    Addresses Gemma E2B dropping present-status members entirely when
+    required:status forces it to abstain rather than guess. Same
+    architectural pattern as _ensure_primary_in_roster.
+
+    Pass 1 is bidirectional: upgrades missing→present when name is near
+    a marker, AND reverts present→missing when Gemma tagged present but
+    the name is not near any marker in the transcription (false positive).
+    """
+    lower_text = transcription.lower()
+
+    # Build (start, end) spans for every presence marker.
+    marker_spans: list[tuple[int, int]] = []
+    for marker in _PRESENCE_MARKERS:
+        start = 0
+        while True:
+            pos = lower_text.find(marker.lower(), start)
+            if pos == -1:
+                break
+            marker_spans.append((pos, pos + len(marker)))
+            start = pos + 1
+
+    def _near_marker(name: str) -> bool:
+        name_lower = name.lower()
+        pos = lower_text.find(name_lower)
+        while pos != -1:
+            name_end = pos + len(name_lower)
+            for m_start, m_end in marker_spans:
+                if abs(pos - m_end) <= _PRESENCE_WINDOW or abs(m_start - name_end) <= _PRESENCE_WINDOW:
+                    return True
+            pos = lower_text.find(name_lower, pos + 1)
+        return False
+
+    # Pass 1: bidirectional correction on existing members.
+    # - missing + near marker → present
+    # - present + NOT near marker → missing (revert Gemma false positive)
+    # No markers in transcription at all → leave all statuses as-is.
+    members: list[FamilyMemberArg] = []
+    changed = False
+    for member in (args.family_members or []):
+        candidates = [member.name] + ([member.name_transliteration] if member.name_transliteration else [])
+        near = bool(marker_spans) and any(_near_marker(c) for c in candidates)
+        if member.status == "missing" and near:
+            members.append(member.model_copy(update={"status": "present"}))
+            changed = True
+        elif member.status == "present" and marker_spans and not near:
+            # Gemma tagged present but no presence marker is near this name.
+            members.append(member.model_copy(update={"status": "missing"}))
+            changed = True
+        else:
+            members.append(member)
+
+    # Pass 2: for each marker, look for a name within the window that
+    # isn't already in the member list. Extract the word(s) immediately
+    # before the marker as the name candidate and the token before that
+    # as a rough relationship hint.
+    existing_names_lower = {m.name.lower() for m in members}
+    for m_start, m_end in marker_spans:
+        # Take the window of text immediately before the marker.
+        window_start = max(0, m_start - _PRESENCE_WINDOW)
+        window = transcription[window_start:m_start].strip()
+        if not window:
+            continue
+        # The last word(s) before the marker are the name candidate.
+        tokens = window.split()
+        if not tokens:
+            continue
+        # Last token before the marker is the name; token before that is
+        # a relationship hint (e.g. "زوجتي عائشة معي" → name="عائشة",
+        # rel="زوجتي"). Single-token only: Arabic names are one word.
+        candidate_name = tokens[-1]
+        if candidate_name.lower() in existing_names_lower:
+            continue  # already handled in pass 1
+        rel_token = tokens[-2] if len(tokens) >= 2 else ""
+        if len(candidate_name) >= 2:  # skip single-char noise
+            members.append(FamilyMemberArg(
+                name=candidate_name,
+                relationship_to_searcher=rel_token,
+                status="present",
+            ))
+            existing_names_lower.add(candidate_name.lower())
+            changed = True
+
+    if not changed:
+        return args
+    return args.model_copy(update={"family_members": members})
+
+
+def _promote_first_missing_to_primary(
+    args: ExtractIntakeFieldsArgs,
+) -> ExtractIntakeFieldsArgs:
+    """Fallback: when Gemma leaves full_name null but family_members has
+    missing-status entries, promote the first missing member to full_name.
+
+    Prevents 'null' rendering in the UI record card when the model puts
+    everyone in family_members and omits the primary slot. The promoted
+    member stays in family_members too — _to_rfl_record filters the
+    primary from the matching-view roster to prevent double-counting.
+    """
+    if args.full_name is not None:
+        return args
+    if not args.family_members:
+        return args
+    first_missing = next(
+        (m for m in args.family_members if m.status == "missing"), None
+    )
+    if first_missing is None:
+        return args
+    return args.model_copy(update={
+        "full_name": first_missing.name,
+        "relationship": first_missing.relationship_to_searcher or args.relationship,
+        "age": first_missing.age if first_missing.age is not None else args.age,
+    })
+
+
 def _map_extraction_to_intake(
     args: ExtractIntakeFieldsArgs,
     lang: str,
@@ -719,6 +911,17 @@ def _to_rfl_record(intake: IntakeRecord) -> RFLRecord:
         else []
     )
 
+    # Exclude the primary missing person from the roster passed to the
+    # matcher — they are already covered by RFLRecord.name (missing_person
+    # slot). Keeping them in both slots causes match_records_network to
+    # fire duplicate NodeMatch pairs (path 2 + path 6 both match the same
+    # name). Storage (IntakeRecord.family_roster) is unaffected; this
+    # filter only applies to the matching view.
+    primary_name = intake.full_name_source_script
+    matching_roster = [
+        m for m in intake.family_roster if m.name != primary_name
+    ] if primary_name else intake.family_roster
+
     return RFLRecord(
         name=name,
         age=age,
@@ -726,7 +929,7 @@ def _to_rfl_record(intake: IntakeRecord) -> RFLRecord:
         last_seen=last_seen,
         guardian=Guardian(present=False, consent=False),
         distinguishing_marks=marks,
-        family_roster=intake.family_roster,
+        family_roster=matching_roster,
         searcher_name=intake.searcher_name or None,
         searcher_name_transliteration=(
             intake.searcher_name_transliteration or None

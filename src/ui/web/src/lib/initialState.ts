@@ -9,7 +9,7 @@ export const INITIAL_RECORD: RecordData = {
   nameNativeRtl: false,
   age: '',
   relationship: '',
-  language: 'Spanish (Latin America)',
+  language: '',
   lastSeenLocation: '',
   lastSeenLocationSource: '',
   lastSeenLocationRtl: false,
