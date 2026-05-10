@@ -149,6 +149,11 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "age (e.g. 'my son Mohamad, he is 8 years old' / 'ابني محمد "
     "عمره 8 سنوات'), put that age on the family_members entry for "
     "that person, NOT on the top-level age field."
+    "\n\n"
+    "If the speaker describes HOW they became separated (e.g. crowd "
+    "surge, bombing, fleeing in different directions, losing contact "
+    "at a crossing), populate separation_circumstance in the source "
+    "language. Null if no separation event is described."
 )
 
 _CRISIS_SYSTEM_PROMPT = (
@@ -880,6 +885,7 @@ def _map_extraction_to_intake(
         # tool's idiom is `distinguishing_features`. Names diverge
         # historically but mean the same thing.
         "distinguishing_marks": args.distinguishing_features,
+        "separation_circumstance": args.separation_circumstance,
         "searcher_name": (
             args.searcher_name if args.searcher_name is not None else ""
         ),

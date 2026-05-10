@@ -102,6 +102,7 @@ class IntakeRecord(BaseModel):
     searcher_name: str = ""
     searcher_name_transliteration: str = ""
     searcher_relationship_to_target: str = ""
+    separation_circumstance: str | None = None
 
 
 # ─── MatchLink ───────────────────────────────────────────────────

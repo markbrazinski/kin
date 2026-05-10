@@ -60,6 +60,7 @@ const FIELD_MAP: Partial<Record<string, keyof RecordData>> = {
   last_seen_location: 'lastSeenLocationSource',
   last_seen_date: 'lastSeenDate',
   distinguishing_marks: 'physicalDesc',
+  separation_circumstance: 'circumstance',
   searcher_name: 'searcherName',
   searcher_name_transliteration: 'searcherNameLatin',
 };

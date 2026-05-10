@@ -150,6 +150,16 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
                         "not stated."
                     ),
                 },
+                "separation_circumstance": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "How the speaker became separated from the missing "
+                        "person (e.g., 'crowd surge at checkpoint', "
+                        "'bombing forced us to flee in different directions', "
+                        "'lost contact crossing the river'); null if not "
+                        "stated. Preserve the speaker's source language."
+                    ),
+                },
                 "family_members": {
                     "type": ["array", "null"],
                     "description": (
@@ -249,6 +259,7 @@ class ExtractIntakeFieldsArgs(BaseModel):
     last_seen_location: str | None = None
     last_seen_date: str | None = None
     distinguishing_features: str | None = None
+    separation_circumstance: str | None = None
     searcher_name: str | None = None
     searcher_name_transliteration: str | None = None
     searcher_relationship_to_target: str | None = None
