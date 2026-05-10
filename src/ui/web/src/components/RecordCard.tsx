@@ -403,12 +403,7 @@ function RecordCard({ record, minor, justPopulatedKey: _justPopulatedKey, disabl
           <FamilyNetworkSection
             searcherName={record.searcherName}
             searcherNameLatin={record.searcherNameLatin}
-            missingPersons={[
-              // Pipeline populates family_roster with status per member.
-              // Merge legacy missingPersons with roster members flagged MISSING.
-              ...record.missingPersons,
-              ...record.familyRoster.filter(m => m.status === 'MISSING' || !m.status),
-            ]}
+            missingPersons={record.familyRoster.filter(m => m.status !== 'WITH_SEARCHER')}
             familyRoster={record.familyRoster.filter(m => m.status === 'WITH_SEARCHER')}
             expandedMap={expandedMap}
             setExpandedMap={setExpandedMap}

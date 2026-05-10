@@ -487,6 +487,9 @@ export type VoicePanelProps = {
      Checked before demoFileRef — fires the full synthetic sequencer
      instead of mic capture or real-pipeline file. */
   syntheticDemoRef?: React.MutableRefObject<(() => void) | null>;
+  /* Fires on every useVoicePhase transition so App's local phase state
+     stays in sync with the real pipeline (Save button, statusLabel, timer). */
+  onPhaseChange?: (phase: VoicePhase) => void;
 };
 
 export function VoicePanel({
@@ -502,6 +505,7 @@ export function VoicePanel({
   onBeginNewIntake,
   demoFileRef: externalDemoFileRef,
   syntheticDemoRef,
+  onPhaseChange,
 }: VoicePanelProps) {
   const intakeIdRef = useRef<string | null>(intakeId);
   intakeIdRef.current = intakeId;
@@ -542,6 +546,8 @@ export function VoicePanel({
     structlogEvents,
     lastPostStatus,
   });
+
+  useEffect(() => { onPhaseChange?.(phase); }, [phase, onPhaseChange]);
 
   // Demo file path: POST pre-recorded audio through the real pipeline.
   // Mirrors the onStop callback — same error handling, same crisis branch.
@@ -1019,6 +1025,23 @@ function App() {
       setTimeout(() => setHighlightedCall(h => (h === id ? null : h)), 1200);
     }
     return id;
+  }, []);
+
+  // Stable identity prevents VoicePanel's useEffect([phase, onPhaseChange])
+  // from re-firing on every App render and racing setTimerRunning calls.
+  const handlePhaseChange = useCallback((vp: VoicePhase) => {
+    const map: Record<VoicePhase, Phase> = {
+      ready: 'ready', awaiting: 'recording', recording: 'recording',
+      transcribing: 'processing', extracting: 'extracting',
+      done: 'done', saved: 'saved',
+    };
+    setPhase(map[vp]);
+    if (vp === 'recording') {
+      setTimerSec(0);
+      setTimerRunning(true);
+    } else if (vp === 'done' || vp === 'saved' || vp === 'ready') {
+      setTimerRunning(false);
+    }
   }, []);
 
   // ----- Keyboard shortcuts (single handler, explicit precedence)
@@ -1579,6 +1602,7 @@ function App() {
                     onBeginNewIntake={() => { onReset(); }}
                     demoFileRef={demoFileRef}
                     syntheticDemoRef={syntheticDemoRef}
+                    onPhaseChange={handlePhaseChange}
                   />
                 </div>
 
@@ -1613,9 +1637,9 @@ function App() {
                 <div className="mb-4">
                   <ChicletRibbon
                     searcherName={record.searcherName}
-                    missingPersonsCount={record.missingPersons.length}
-                    detailedCount={record.missingPersons.filter(
-                      m => !!m.lastSeen || (m.marks && m.marks.length > 0)
+                    missingPersonsCount={record.familyRoster.filter(m => m.status !== 'WITH_SEARCHER').length}
+                    detailedCount={record.familyRoster.filter(
+                      m => m.status !== 'WITH_SEARCHER' && (!!m.lastSeen || (m.marks && m.marks.length > 0))
                     ).length}
                   />
                 </div>

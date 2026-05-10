@@ -92,7 +92,9 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
                 "age": {
                     "type": ["integer", "null"],
                     "description": (
-                        "Age of the missing person if stated; null if not stated."
+                        "Age of the SEARCHER (the person speaking), not the age "
+                        "of any family member they mention. Null if the searcher "
+                        "did not state their own age."
                     ),
                 },
                 "last_seen_location": {
@@ -198,7 +200,13 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
                             },
                             "age": {
                                 "type": ["integer", "null"],
-                                "description": "Age in years if stated; null if not stated.",  # noqa: E501
+                                "description": (
+                                    "Age of THIS family member as stated by the "
+                                    "searcher. Extract from phrases like 'عمره 8 "
+                                    "سنوات' (he is 8 years old) or 'age 8' when "
+                                    "the searcher states a family member's age. "
+                                    "Null if not stated for this member."
+                                ),
                             },
                             "last_seen_location": {
                                 "type": "string",

@@ -140,6 +140,12 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "with us' / 'is safe'. Otherwise set status='missing'. "
     "Emit null for family_members only when the speaker names no "
     "one at all."
+    "\n\n"
+    "Age assignment rule: the top-level 'age' field is ALWAYS the "
+    "searcher's own age. When the searcher states a family member's "
+    "age (e.g. 'my son Mohamad, he is 8 years old' / 'ابني محمد "
+    "عمره 8 سنوات'), put that age on the family_members entry for "
+    "that person, NOT on the top-level age field."
 )
 
 _CRISIS_SYSTEM_PROMPT = (
@@ -344,6 +350,7 @@ async def ingest_audio(
     args = ExtractIntakeFieldsArgs(**tool_result.arguments)
     args = _ensure_primary_in_roster(args)
     args = _detect_present_status(args, result.transcription)
+    args = _extract_member_ages(args, result.transcription)
     args = _promote_first_missing_to_primary(args)
 
     # Stage 4: map extraction → IntakeRecord fields.
@@ -728,6 +735,48 @@ def _detect_present_status(
     if not changed:
         return args
     return args.model_copy(update={"family_members": members})
+
+
+def _extract_member_ages(
+    args: ExtractIntakeFieldsArgs,
+    transcription: str,
+) -> ExtractIntakeFieldsArgs:
+    """Deterministic fallback: for each family member with age=None, search
+    the transcription for Arabic age phrases near the member's name.
+
+    Patterns tried (in order):
+      - name ... N سنة/سنوات  (name then age)
+      - N سنة/سنوات ... name  (age then name)
+      - name ... عمره N       (name then 'his age N')
+      - عمره N ... name       (age-phrase then name)
+
+    Only fires when Gemma left the age field null; if Gemma extracted it
+    correctly this is a no-op.
+    """
+    import re
+
+    if not args.family_members:
+        return args
+    updated = list(args.family_members)
+    changed = False
+    for i, member in enumerate(updated):
+        if member.age is not None:
+            continue
+        patterns = [
+            rf'{re.escape(member.name)}.{{0,20}}?(\d+)\s*سن[وة]',
+            rf'(\d+)\s*سن[وة].{{0,20}}?{re.escape(member.name)}',
+            rf'{re.escape(member.name)}.{{0,20}}?عمره\s+(\d+)',
+            rf'عمره\s+(\d+).{{0,20}}?{re.escape(member.name)}',
+        ]
+        for pat in patterns:
+            m = re.search(pat, transcription)
+            if m:
+                updated[i] = member.model_copy(update={"age": int(m.group(1))})
+                changed = True
+                break
+    if not changed:
+        return args
+    return args.model_copy(update={"family_members": updated})
 
 
 def _promote_first_missing_to_primary(
