@@ -201,8 +201,15 @@ async def test_ingest_audio_extend_raises_on_crisis_branch(
         storage=storage,
     )
 
-    # Now try to extend with a crisis-keyword utterance.
-    extend_ollama = _OllamaStub(english="kill me now", tool_call_response=None)
+    # Now try to extend with a crisis-keyword utterance. Extraction fires
+    # first (one call), then the guard raises before crisis persistence.
+    extend_ollama = _OllamaStub(
+        english="kill me now",
+        tool_call_response=ToolCallResult(
+            name="extract_intake_fields",
+            arguments={"full_name": None, "relationship": None},
+        ),
+    )
 
     with pytest.raises(ValueError, match="crisis path is create-only"):
         await ingest_audio(

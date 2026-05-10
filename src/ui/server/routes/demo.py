@@ -233,7 +233,7 @@ async def seed_fixture(body: SeedFixtureRequest, request: Request) -> dict[str, 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _DEMO_AUDIO: dict[str, Path] = {
-    "yusuf": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_Yusuf_take_1_demo.mp3",
+    "yusuf": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_yusuf_take_2_demo.wav",
     "mariam": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_Mariam_take 2 demo.wav",
 }
 

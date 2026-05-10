@@ -13,13 +13,16 @@ S4 adds `ingest_audio()` — the end-to-end entry point that runs
 transcription + translation, classifies for crisis content, runs Gemma
 tool-calling extraction (on the SOURCE-language text, matching Apr 28
 hello-world + Apr 29 multilang sweep probe conditions), and persists
-the result as an IntakeRecord with auto-emitted audit events. Crisis
-inputs skip extraction entirely and route to crisis handling — the
-record stays partial and the worker saves after handling the referral.
+the result as an IntakeRecord with auto-emitted audit events.
 
 ingest_audio emits all field_extracted events at once after a single
 tool_call (one bulk update). Beat 5 turn-by-turn appearance is the
 SSE brief's concern via sequential audio files or staggered rendering.
+
+Crisis detection does NOT skip extraction. Extraction runs
+unconditionally; crisis is classified first but the flag is applied
+after extraction so the record is fully populated before the crisis
+audit events (crisis_detected, referral_issued) fire.
 """
 
 from __future__ import annotations
@@ -256,7 +259,8 @@ async def ingest_audio(
     extracted fields. intake_id=X (S5 extend path): read record X,
     merge new turn's extracted fields, fire matching re-trigger if
     identity-bearing fields changed. The crisis path is create-only;
-    extending into a crisis turn raises ValueError.
+    extending into a crisis turn raises ValueError (guard fires after
+    extraction, before crisis persistence).
 
     Returns a 2-tuple. The second element is `locale_aware_message`,
     Gemma's escalate_crisis short message in the speaker's language.
@@ -300,47 +304,18 @@ async def ingest_audio(
         source_device_id=source_device_id,
     )
 
-    # Stage 2: crisis classification on SOURCE text.
+    # Stage 2: crisis classification on SOURCE text. Captured here but
+    # NOT acted on yet — extraction runs unconditionally so the record
+    # is fully populated before the crisis flag fires (see Stage 8).
     safety = safety_rules.classify(result.transcription, lang=lang)
 
     if safety.is_crisis:
-        if intake_id is not None:
-            # S5 lock #4: crisis path is create-only. Extending an
-            # existing intake into a crisis turn is out of scope for
-            # Bundle 1 (ADR-004 implicit). Raised BEFORE any Gemma
-            # invocation so a misuse never burns a tool_call budget.
-            raise ValueError(
-                "crisis path is create-only; cannot extend "
-                f"intake_id={intake_id} into a crisis turn"
-            )
         log.warning(
             "crisis_path_taken",
             lang=lang,
             source_device_id=source_device_id,
             matched_keyword_count=len(safety.matched_keywords),
         )
-        # S6: invoke Gemma to format a locale-aware referral. The
-        # deterministic classifier above is the sole safety gate;
-        # Gemma's role is structured output formatting only. See
-        # ADR-004 REV 2. On any tool_call failure the helper falls
-        # back to the static _REFERRAL_ORG_BY_LANG lookup so the
-        # safety path always completes.
-        referral_org, locale_message = await _format_crisis_referral(
-            transcription=result.transcription,
-            lang=lang,
-            safety=safety,
-            ollama=ollama,
-        )
-        record = _persist_crisis_record(
-            lang=lang,
-            source_device_id=source_device_id,
-            safety=safety,
-            storage=storage,
-            referral_organization=referral_org,
-        )
-        # Empty string fallback (Gemma tool_call failure) → None so
-        # the route layer can use a clean `if message is not None`.
-        return record, locale_message or None
 
     # Stage 3: Gemma tool-calling extraction on SOURCE text.
     messages = _build_extraction_messages(result.transcription)
@@ -420,6 +395,48 @@ async def ingest_audio(
                 record.id, status="complete"
             )
 
+    # Stage 9: crisis flag — fires AFTER extraction so the record is
+    # fully populated when crisis_detected + referral_issued emit.
+    # Returns (record, locale_message) — same tuple shape as the normal
+    # path; callers that check record.is_crisis work unchanged.
+    if safety.is_crisis:
+        # S5 lock #4: crisis path is create-only. Guard placed here
+        # (after extraction, before persistence) so a misuse doesn't
+        # create a dangling populated record without the crisis flag.
+        if intake_id is not None:
+            raise ValueError(
+                "crisis path is create-only; cannot extend "
+                f"intake_id={intake_id} into a crisis turn"
+            )
+        # S6: invoke Gemma to format a locale-aware referral.
+        # Deterministic classifier (Stage 2) is the sole safety gate;
+        # Gemma's role here is structured output formatting only.
+        referral_org, locale_message = await _format_crisis_referral(
+            transcription=result.transcription,
+            lang=lang,
+            safety=safety,
+            ollama=ollama,
+        )
+        crisis_match_path = "keyword" if safety.matched_keywords else None
+        record = storage.update_intake_record(
+            record.id,
+            is_crisis=True,
+            crisis_match_path=crisis_match_path,
+            referral_issued=True,
+            referral_organization=referral_org,
+        )
+        log.info(
+            "ingest_audio_complete",
+            record_id=str(record.id),
+            status=record.status,
+            is_crisis=record.is_crisis,
+            is_minor=record.is_minor,
+            lang=lang,
+        )
+        # Empty string fallback (Gemma tool_call failure) → None so
+        # the route layer can use a clean `if message is not None`.
+        return record, locale_message or None
+
     log.info(
         "ingest_audio_complete",
         record_id=str(record.id),
@@ -431,6 +448,9 @@ async def ingest_audio(
     return record, None
 
 
+# DEPRECATED: no longer called from ingest_audio after crisis-reorder.
+# Crisis persistence is now handled inline in Stage 9 of ingest_audio()
+# via storage.update_intake_record() on the already-extracted record.
 def _persist_crisis_record(
     *,
     lang: str,
@@ -741,39 +761,50 @@ def _extract_member_ages(
     args: ExtractIntakeFieldsArgs,
     transcription: str,
 ) -> ExtractIntakeFieldsArgs:
-    """Deterministic fallback: for each family member with age=None, search
-    the transcription for Arabic age phrases near the member's name.
+    """Deterministic fallback: assign each age mention to the nearest
+    member name. Closest-wins prevents a distant member absorbing an
+    age that belongs to a nearer one (e.g. يوسف should not absorb
+    'عمره 8 سنوات' stated for محمد a few chars later).
 
-    Patterns tried (in order):
-      - name ... N سنة/سنوات  (name then age)
-      - N سنة/سنوات ... name  (age then name)
-      - name ... عمره N       (name then 'his age N')
-      - عمره N ... name       (age-phrase then name)
-
-    Only fires when Gemma left the age field null; if Gemma extracted it
-    correctly this is a no-op.
+    Only fires for members where Gemma left age=None.
     """
     import re
 
     if not args.family_members:
         return args
+
+    # Find all age mentions: "عمره N" or "N سنة/سنوات"
+    age_mentions = list(re.finditer(
+        r'(?:عمره?\s+)?(\d+)\s*سن[وة]', transcription
+    ))
+    if not age_mentions:
+        return args
+
     updated = list(args.family_members)
     changed = False
-    for i, member in enumerate(updated):
-        if member.age is not None:
-            continue
-        patterns = [
-            rf'{re.escape(member.name)}.{{0,20}}?(\d+)\s*سن[وة]',
-            rf'(\d+)\s*سن[وة].{{0,20}}?{re.escape(member.name)}',
-            rf'{re.escape(member.name)}.{{0,20}}?عمره\s+(\d+)',
-            rf'عمره\s+(\d+).{{0,20}}?{re.escape(member.name)}',
-        ]
-        for pat in patterns:
-            m = re.search(pat, transcription)
-            if m:
-                updated[i] = member.model_copy(update={"age": int(m.group(1))})
-                changed = True
-                break
+
+    for age_match in age_mentions:
+        age_val = int(age_match.group(1))
+        age_pos = age_match.start()
+
+        # Find the closest member (by name position) that still needs an age.
+        best_idx: int | None = None
+        best_dist = float('inf')
+        for i, member in enumerate(updated):
+            if member.age is not None:
+                continue
+            for name_match in re.finditer(re.escape(member.name), transcription):
+                dist = abs(name_match.start() - age_pos)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
+
+        if best_idx is not None and best_dist < 40:
+            updated[best_idx] = updated[best_idx].model_copy(
+                update={"age": age_val}
+            )
+            changed = True
+
     if not changed:
         return args
     return args.model_copy(update={"family_members": updated})

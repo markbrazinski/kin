@@ -490,6 +490,10 @@ export type VoicePanelProps = {
   /* Fires on every useVoicePhase transition so App's local phase state
      stays in sync with the real pipeline (Save button, statusLabel, timer). */
   onPhaseChange?: (phase: VoicePhase) => void;
+  /* Fires the moment Begin is clicked — before any phase dispatch or
+     async work. App uses this to start the timer reliably without
+     depending on React batching of phase transitions. */
+  onBegin?: () => void;
 };
 
 export function VoicePanel({
@@ -506,6 +510,7 @@ export function VoicePanel({
   demoFileRef: externalDemoFileRef,
   syntheticDemoRef,
   onPhaseChange,
+  onBegin,
 }: VoicePanelProps) {
   const intakeIdRef = useRef<string | null>(intakeId);
   intakeIdRef.current = intakeId;
@@ -619,6 +624,7 @@ export function VoicePanel({
       syntheticQueued();
       return;
     }
+    onBegin?.();
     phaseBegin();
     setLastPostStatus(null);
     const queued = demoFileRef.current;
@@ -1027,8 +1033,17 @@ function App() {
     return id;
   }, []);
 
+  // Fires the moment Begin is clicked — anchors the timer and trace
+  // timestamps before any phase dispatch or React batching can intervene.
+  const handleBeginIntake = useCallback(() => {
+    demoStartRef.current = performance.now();
+    setTimerSec(0);
+    setTimerRunning(true);
+  }, []);
+
   // Stable identity prevents VoicePanel's useEffect([phase, onPhaseChange])
-  // from re-firing on every App render and racing setTimerRunning calls.
+  // from re-firing on every App render. Timer is now owned by onBegin;
+  // this callback only syncs App phase and handles the reset path.
   const handlePhaseChange = useCallback((vp: VoicePhase) => {
     const map: Record<VoicePhase, Phase> = {
       ready: 'ready', awaiting: 'recording', recording: 'recording',
@@ -1036,11 +1051,10 @@ function App() {
       done: 'done', saved: 'saved',
     };
     setPhase(map[vp]);
-    if (vp === 'recording') {
-      setTimerSec(0);
-      setTimerRunning(true);
-    } else if (vp === 'done' || vp === 'saved' || vp === 'ready') {
+    if (vp === 'ready') {
+      // Error/reset path — stop and zero the timer.
       setTimerRunning(false);
+      setTimerSec(0);
     }
   }, []);
 
@@ -1224,7 +1238,11 @@ function App() {
     setNetworkMatchResult(null);
     setDemoStructlogEvents([]);
     pendingPostCrisisRef.current = null;
-    setPrevRecord(null);
+    // Preserve prevRecord across reset when it holds a real completed
+    // intake — it becomes Side A for the next intake's match graph.
+    // Synthetic demo functions always overwrite prevRecord immediately
+    // after calling onReset(), so this doesn't affect them.
+    setPrevRecord(prev => (prev?.recordId ? prev : null));
     // Clear SSE reducer state too — without this, intakeId stays
     // pinned to the previous turn's record id and the next mic turn
     // POSTs as an extend (HTTP 500 on crisis-after-Reset).
@@ -1274,9 +1292,11 @@ function App() {
   };
 
   const runYusufDemo = () => {
+    onReset();
     demoStartRef.current = performance.now();
     setPhase("recording");
     setTimerRunning(true);
+    setTimerSec(0);
     setSpeakerLanguage("ar");
     // v1.1 cleanup: inject via synthetic intake_created event once useEventStream exposes dispatch
     setRecord(prev => ({
@@ -1497,6 +1517,7 @@ function App() {
               args: { status: "complete" },
               result: "queued_local" },
              timerRunning ? timerSec * 1000 : 0);
+    setTimerRunning(false);
     refetchQueue();
     setPhase('saved');
     // Snapshot current record as Side A for the match graph, but only if
@@ -1603,6 +1624,7 @@ function App() {
                     demoFileRef={demoFileRef}
                     syntheticDemoRef={syntheticDemoRef}
                     onPhaseChange={handlePhaseChange}
+                    onBegin={handleBeginIntake}
                   />
                 </div>
 
@@ -1639,7 +1661,10 @@ function App() {
                     searcherName={record.searcherName}
                     missingPersonsCount={record.familyRoster.filter(m => m.status !== 'WITH_SEARCHER').length}
                     detailedCount={record.familyRoster.filter(
-                      m => m.status !== 'WITH_SEARCHER' && (!!m.lastSeen || (m.marks && m.marks.length > 0))
+                      m => m.status !== 'WITH_SEARCHER' && (
+                        !!m.lastSeen || !!record.lastSeenLocation ||
+                        (m.marks && m.marks.length > 0)
+                      )
                     ).length}
                   />
                 </div>
@@ -1796,7 +1821,11 @@ function App() {
           onResolved={() => {
             setCrisisOpen(false);
             setCrisisMessage(null);
+            const hadPending = !!pendingPostCrisisRef.current;
             pendingPostCrisisRef.current?.(); pendingPostCrisisRef.current = null;
+            // Real pipeline: pendingPostCrisisRef is null (synthetic sets it).
+            // Advance phase to 'done' so Save button appears.
+            if (!hadPending) setPhase('done');
             logCall({ name: "crisis.resolve", args: { outcome: "referral_provided" } },
                     timerRunning ? timerSec * 1000 : 0);
             if (streamState.intakeId) {
@@ -1810,7 +1839,11 @@ function App() {
           onDeEscalated={() => {
             setCrisisOpen(false);
             setCrisisMessage(null);
+            const hadPending = !!pendingPostCrisisRef.current;
             pendingPostCrisisRef.current?.(); pendingPostCrisisRef.current = null;
+            // Real pipeline: pendingPostCrisisRef is null (synthetic sets it).
+            // Advance phase to 'done' so Save button appears.
+            if (!hadPending) setPhase('done');
             logCall({ name: "crisis.resolve", args: { outcome: "de_escalated" } },
                     timerRunning ? timerSec * 1000 : 0);
             if (streamState.intakeId) {

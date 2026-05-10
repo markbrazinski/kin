@@ -44,15 +44,24 @@ class _OllamaStub:
     fired. tool_call_response is configured per-test; if None and
     tool_call() is invoked, the stub raises a clear error so an
     accidentally-fired tool_call fails the test loud.
+
+    tool_call_responses (list): when provided, responses are consumed
+    in order. Useful for crisis tests where extraction fires first and
+    escalate_crisis fires second. Falls back to tool_call_response
+    (single) when the list is exhausted or not provided.
     """
 
     def __init__(
         self,
         english: str = "hello",
         tool_call_response: ToolCallResult | None = None,
+        tool_call_responses: list[ToolCallResult] | None = None,
     ) -> None:
         self._english = english
         self._tool_call_response = tool_call_response
+        self._tool_call_responses: list[ToolCallResult] = (
+            list(tool_call_responses) if tool_call_responses else []
+        )
         self.translate_calls: list[tuple[str, str]] = []
         self.tool_call_calls: list[
             tuple[list[dict[str, Any]], list[dict[str, Any]]]
@@ -68,6 +77,8 @@ class _OllamaStub:
         tools: list[dict[str, Any]],
     ) -> ToolCallResult:
         self.tool_call_calls.append((messages, tools))
+        if self._tool_call_responses:
+            return self._tool_call_responses.pop(0)
         if self._tool_call_response is None:
             raise AssertionError(
                 "_OllamaStub.tool_call invoked without configured response"
@@ -158,7 +169,7 @@ async def test_ingest_audio_happy_path_spanish_carlos(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ingest_audio_crisis_path_arabic_skips_extraction(
+async def test_ingest_audio_crisis_path_arabic_extracts_then_flags(
     tmp_path: Path,
 ) -> None:
     storage = _adapter(tmp_path)
@@ -166,19 +177,23 @@ async def test_ingest_audio_crisis_path_arabic_skips_extraction(
 
     # "اقتلني" is a real keyword from _CRISIS_KEYWORDS["ar"].
     whisper = _WhisperStub(text="اقتلني الآن")
-    # S6: crisis branch invokes Gemma escalate_crisis (locale-aware
-    # formatter; safety_rules.classify is the gate). Configure the
-    # stub to return a valid escalate_crisis result so extract_intake_fields
-    # is the only thing that must be skipped.
+    # Crisis-reorder: extraction fires first (call 1), then escalate_crisis
+    # fires second (call 2). Two responses configured in order.
     ollama = _OllamaStub(
         english="kill me now",
-        tool_call_response=ToolCallResult(
-            name="escalate_crisis",
-            arguments={
-                "referral_organization": "الصليب الأحمر",
-                "locale_aware_message": "يرجى الاتصال بالرقم...",
-            },
-        ),
+        tool_call_responses=[
+            ToolCallResult(
+                name="extract_intake_fields",
+                arguments={"full_name": None, "relationship": None},
+            ),
+            ToolCallResult(
+                name="escalate_crisis",
+                arguments={
+                    "referral_organization": "الصليب الأحمر",
+                    "locale_aware_message": "يرجى الاتصال بالرقم...",
+                },
+            ),
+        ],
     )
 
     record, locale_message = await ingest_audio(
@@ -200,21 +215,22 @@ async def test_ingest_audio_crisis_path_arabic_skips_extraction(
     # through the tuple return for the route layer.
     assert locale_message == "يرجى الاتصال بالرقم..."
 
-    # extract_intake_fields skipped; escalate_crisis invoked once.
-    assert len(ollama.tool_call_calls) == 1
-    _msgs, tools = ollama.tool_call_calls[0]
-    tool_names = {t["function"]["name"] for t in tools}
-    assert tool_names == {"escalate_crisis"}
+    # Both tool_calls fire: extract_intake_fields first, escalate_crisis second.
+    assert len(ollama.tool_call_calls) == 2
+    _msgs0, tools0 = ollama.tool_call_calls[0]
+    assert {t["function"]["name"] for t in tools0} == {"extract_intake_fields"}
+    _msgs1, tools1 = ollama.tool_call_calls[1]
+    assert {t["function"]["name"] for t in tools1} == {"escalate_crisis"}
 
-    # Audit events ordered: created → crisis dual-emit → field_extracted ×N.
+    # Audit events ordered: created → (field_extracted|match_proposed) ×N
+    # → crisis dual-emit. Crisis flags fire last.
     event_types = [e.event_type for e in storage.list_audit_events()]
     assert event_types[0] == "intake_created"
-    assert event_types[1] == "crisis_detected"
-    assert event_types[2] == "referral_issued"
-    # Remainder are field_extracted for is_crisis, crisis_match_path,
-    # referral_issued, referral_organization.
-    assert all(et == "field_extracted" for et in event_types[3:])
-    assert len(event_types[3:]) == 4
+    crisis_idx = next(i for i, et in enumerate(event_types) if et == "crisis_detected")
+    pre_crisis = set(event_types[1:crisis_idx])
+    assert pre_crisis <= {"field_extracted", "match_proposed"}
+    assert event_types[crisis_idx] == "crisis_detected"
+    assert event_types[crisis_idx + 1] == "referral_issued"
 
 
 # ─── 3. Partial status when relationship missing ──────────────────
@@ -482,15 +498,22 @@ async def test_ingest_audio_crisis_path_uses_gemma_referral(
     audio = _audio_path(tmp_path)
 
     whisper = _WhisperStub(text="me suicido ahora")
+    # Crisis-reorder: extraction fires first, escalate_crisis second.
     ollama = _OllamaStub(
         english="I'm killing myself now",
-        tool_call_response=ToolCallResult(
-            name="escalate_crisis",
-            arguments={
-                "referral_organization": "Cruz Roja",
-                "locale_aware_message": "Por favor llame a Cruz Roja al 911.",
-            },
-        ),
+        tool_call_responses=[
+            ToolCallResult(
+                name="extract_intake_fields",
+                arguments={"full_name": None, "relationship": None},
+            ),
+            ToolCallResult(
+                name="escalate_crisis",
+                arguments={
+                    "referral_organization": "Cruz Roja",
+                    "locale_aware_message": "Por favor llame a Cruz Roja al 911.",
+                },
+            ),
+        ],
     )
 
     record, _ = await ingest_audio(
@@ -510,9 +533,9 @@ async def test_ingest_audio_crisis_path_uses_gemma_referral(
     assert record.crisis_match_path == "keyword"  # classifier still decided
     assert record.referral_issued is True
 
-    # escalate_crisis invoked once; extract_intake_fields skipped.
-    assert len(ollama.tool_call_calls) == 1
-    _msgs, tools = ollama.tool_call_calls[0]
+    # Both tool_calls fire: extract_intake_fields first, escalate_crisis second.
+    assert len(ollama.tool_call_calls) == 2
+    _msgs, tools = ollama.tool_call_calls[1]
     assert {t["function"]["name"] for t in tools} == {"escalate_crisis"}
 
 
@@ -525,20 +548,29 @@ async def test_ingest_audio_crisis_path_falls_back_to_static_lookup(
     """
     from integration._errors import InferenceTimeout
 
-    class _RaisingOllama(_OllamaStub):
+    class _RaisingOnCrisisOllama(_OllamaStub):
+        """Succeeds for extract_intake_fields; raises on escalate_crisis."""
+
         async def tool_call(
             self,
             messages: list[dict[str, Any]],
             tools: list[dict[str, Any]],
         ) -> ToolCallResult:
             self.tool_call_calls.append((messages, tools))
-            raise InferenceTimeout("simulated cold-start timeout")
+            tool_names = {t["function"]["name"] for t in tools}
+            if "escalate_crisis" in tool_names:
+                raise InferenceTimeout("simulated cold-start timeout")
+            # Extraction succeeds with empty fields.
+            return ToolCallResult(
+                name="extract_intake_fields",
+                arguments={"full_name": None, "relationship": None},
+            )
 
     storage = _adapter(tmp_path)
     audio = _audio_path(tmp_path)
 
     whisper = _WhisperStub(text="me suicido ahora")
-    ollama = _RaisingOllama(english="I'm killing myself now")
+    ollama = _RaisingOnCrisisOllama(english="I'm killing myself now")
 
     record, _ = await ingest_audio(
         audio,
@@ -555,11 +587,14 @@ async def test_ingest_audio_crisis_path_falls_back_to_static_lookup(
     assert record.is_crisis is True
     assert record.referral_issued is True
 
-    # Audit dual-emit in order.
+    # Audit ordering: created → (field_extracted|match_proposed) ×N → crisis dual-emit.
     event_types = [e.event_type for e in storage.list_audit_events()]
     assert event_types[0] == "intake_created"
-    assert event_types[1] == "crisis_detected"
-    assert event_types[2] == "referral_issued"
+    crisis_idx = next(i for i, et in enumerate(event_types) if et == "crisis_detected")
+    pre_crisis = set(event_types[1:crisis_idx])
+    assert pre_crisis <= {"field_extracted", "match_proposed"}
+    assert event_types[crisis_idx] == "crisis_detected"
+    assert event_types[crisis_idx + 1] == "referral_issued"
 
 
 @pytest.mark.asyncio
@@ -592,11 +627,17 @@ async def test_ingest_audio_crisis_extend_still_raises_value_error(
         storage=storage,
     )
 
-    # Now extend with a crisis transcript. tool_call_response stays None
-    # so any Gemma invocation (extract OR escalate) fails loud — proving
-    # the ValueError fires before any Gemma path runs.
+    # Extend with a crisis transcript. Extraction fires first (one call),
+    # then the guard raises before crisis persistence — no escalate_crisis
+    # call is made, no crisis flag is written.
     crisis_whisper = _WhisperStub(text="me suicido ahora")
-    crisis_ollama = _OllamaStub(english="kill myself", tool_call_response=None)
+    crisis_ollama = _OllamaStub(
+        english="kill myself",
+        tool_call_response=ToolCallResult(
+            name="extract_intake_fields",
+            arguments={"full_name": None, "relationship": None},
+        ),
+    )
 
     with pytest.raises(ValueError, match="crisis path is create-only"):
         await ingest_audio(
@@ -609,8 +650,10 @@ async def test_ingest_audio_crisis_extend_still_raises_value_error(
             intake_id=seed_record.id,
         )
 
-    # No Gemma tool_call invoked on the crisis-extend attempt.
-    assert crisis_ollama.tool_call_calls == []
+    # One tool_call (extraction); escalate_crisis was never reached.
+    assert len(crisis_ollama.tool_call_calls) == 1
+    _msgs, tools = crisis_ollama.tool_call_calls[0]
+    assert {t["function"]["name"] for t in tools} == {"extract_intake_fields"}
 
 
 # ─── S15a: source_utterance + whisper_translation in field_extracted ─

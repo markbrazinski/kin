@@ -57,7 +57,7 @@ const FIELD_MAP: Partial<Record<string, keyof RecordData>> = {
   full_name_transliteration: 'name',
   relationship_to_seeker: 'relationship',
   age: 'age',
-  last_seen_location: 'lastSeenLocation',
+  last_seen_location: 'lastSeenLocationSource',
   last_seen_date: 'lastSeenDate',
   distinguishing_marks: 'physicalDesc',
   searcher_name: 'searcherName',
