@@ -209,4 +209,4 @@ All raw results in [`results/`](results/).
 - Demo video: [to be published]
 - Kaggle writeup: [to be published]
 - Contact: mark@brazinski.us
-- License: MIT (license file pending)
+- License: MIT
