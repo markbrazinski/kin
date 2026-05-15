@@ -112,6 +112,13 @@ class StorageAdapter:
     def list_intake_records(self) -> list[IntakeRecord]:
         return list(self._iter_intake_records())
 
+    def clear_all(self) -> None:
+        """Truncate all three JSONL files. Used by the demo clear-storage endpoint."""
+        for fname in (INTAKE_FILE, MATCH_FILE, AUDIT_FILE):
+            p = self._dir / fname
+            if p.exists():
+                p.write_text("")
+
     def update_intake_record(
         self,
         id: UUID,

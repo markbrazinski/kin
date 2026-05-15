@@ -27,6 +27,7 @@ audit events (crisis_detected, referral_issued) fire.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -328,10 +329,37 @@ async def ingest_audio(
         messages=messages, tools=[EXTRACT_INTAKE_FIELDS_TOOL]
     )
     args = ExtractIntakeFieldsArgs(**tool_result.arguments)
+
+    # Stage 3b: English-translation fallback.
+    # On crisis audio, Gemma sometimes returns all-null fields on the
+    # source-language pass (distress content causes early stop). If
+    # extraction yielded nothing extractable, retry on the English
+    # translation so the RecordCard is not blank.
+    if _extraction_is_empty(args) and result.english_translation != result.transcription:
+        log.info(
+            "extraction_empty_fallback_en",
+            lang=lang,
+            source_device_id=source_device_id,
+        )
+        en_messages = _build_extraction_messages(result.english_translation)
+        en_tool_result = await ollama.tool_call(
+            messages=en_messages, tools=[EXTRACT_INTAKE_FIELDS_TOOL]
+        )
+        args = ExtractIntakeFieldsArgs(**en_tool_result.arguments)
+
     args = _ensure_primary_in_roster(args)
     args = _detect_present_status(args, result.transcription)
     args = _extract_member_ages(args, result.transcription)
     args = _promote_first_missing_to_primary(args)
+    # For non-Latin languages, fill missing name_transliteration using
+    # proximity matching against the Whisper English translation.
+    if lang not in _LATIN_SCRIPT_LANGS:
+        args = _fill_transliterations(args, result.transcription, result.english_translation)
+    # Backfill searcher_name when Gemma missed it (common on crisis audio
+    # where the distress content dominates the tool call). Only fires when
+    # searcher_name is still empty after extraction + transliteration fill.
+    if lang not in _LATIN_SCRIPT_LANGS and not args.searcher_name:
+        args = _fill_searcher_name(args, result.transcription, result.english_translation)
 
     # Stage 4: map extraction → IntakeRecord fields.
     intake_fields = _map_extraction_to_intake(args, lang)
@@ -545,6 +573,177 @@ async def _format_crisis_referral(
         )
         fallback = _REFERRAL_ORG_BY_LANG.get(lang, "ICRC Family Links Network")
         return fallback, ""
+
+
+_TRANSLITERATION_STOPWORDS = frozenset({
+    "I", "My", "The", "A", "An", "We", "He", "She", "They",
+    "His", "Her", "Our", "Your", "Its", "Am", "Is", "Are",
+    "Last", "With", "For", "At", "From", "Of", "No", "Not",
+    "Three", "Eight", "Days", "Years", "Old", "Ago", "Gate",
+    "South", "Southern", "North", "Camp", "During",
+})
+
+
+def _proximity_transliterate(
+    arabic_name: str,
+    transcription: str,
+    en_candidates: list[tuple[int, str]],
+    used: set[int],
+    src_len: int,
+    en_len: int,
+) -> str | None:
+    """Find the closest unused English candidate to the Arabic name's
+    position in the source transcription. Returns None if not found."""
+    ar_pos = transcription.find(arabic_name)
+    if ar_pos == -1:
+        return None
+    target_en_pos = int(ar_pos / src_len * en_len)
+    best_idx: int | None = None
+    best_dist = float('inf')
+    for idx, (en_pos, _token) in enumerate(en_candidates):
+        if idx in used:
+            continue
+        dist = abs(en_pos - target_en_pos)
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = idx
+    if best_idx is None:
+        return None
+    used.add(best_idx)
+    return en_candidates[best_idx][1]
+
+
+def _fill_transliterations(
+    args: ExtractIntakeFieldsArgs,
+    transcription: str,
+    english_translation: str,
+) -> ExtractIntakeFieldsArgs:
+    """Best-effort: populate all missing name transliterations — searcher,
+    primary missing person, and family members — by proximity-matching
+    capitalised tokens from the Whisper English translation to where each
+    Arabic name appears in the source transcription.
+
+    Covers: searcher_name_transliteration, family_member.name_transliteration.
+    Only fills fields where the value is None/empty; never overwrites Gemma.
+    """
+    has_work = (
+        (args.searcher_name and not args.searcher_name_transliteration)
+        or any(m.name_transliteration is None for m in (args.family_members or []))
+    )
+    if not has_work:
+        return args
+
+    en_candidates: list[tuple[int, str]] = [
+        (m.start(), m.group())
+        for m in re.finditer(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', english_translation)
+        if m.group() not in _TRANSLITERATION_STOPWORDS
+    ]
+    if not en_candidates:
+        return args
+
+    src_len = max(len(transcription), 1)
+    en_len = max(len(english_translation), 1)
+    used: set[int] = set()
+    updates: dict[str, str] = {}
+
+    # Searcher name first — it appears earliest in most transcripts.
+    if args.searcher_name and not args.searcher_name_transliteration:
+        t = _proximity_transliterate(
+            args.searcher_name, transcription, en_candidates, used, src_len, en_len
+        )
+        if t:
+            updates["searcher_name_transliteration"] = t
+
+    # Family members.
+    updated_members = []
+    changed_members = False
+    for member in (args.family_members or []):
+        if member.name_transliteration is not None:
+            updated_members.append(member)
+            continue
+        t = _proximity_transliterate(
+            member.name, transcription, en_candidates, used, src_len, en_len
+        )
+        if t:
+            updated_members.append(member.model_copy(update={"name_transliteration": t}))
+            changed_members = True
+        else:
+            updated_members.append(member)
+
+    if changed_members:
+        updates["family_members"] = updated_members  # type: ignore[assignment]
+
+    if not updates:
+        return args
+    return args.model_copy(update=updates)
+
+
+def _fill_searcher_name(
+    args: ExtractIntakeFieldsArgs,
+    transcription: str,
+    english_translation: str,
+) -> ExtractIntakeFieldsArgs:
+    """Backfill searcher_name from English translation when Gemma missed it.
+
+    Matches "I am [Name]" / "I'm [Name]" in the English translation,
+    then proximity-matches the Latin name back to the Arabic source
+    script using the same approach as _fill_transliterations(). Only
+    fires when searcher_name is empty — never overwrites a good extraction.
+    """
+    m = re.search(
+        r"\bI(?:\s+am|\s+'m)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+        english_translation,
+    )
+    if not m:
+        return args
+
+    latin_name = m.group(1)
+    # Stopword guard — skip generic tokens that appear in "I am [adjective]"
+    if latin_name.split()[0] in _TRANSLITERATION_STOPWORDS:
+        return args
+
+    # Find the Arabic source token at a proportional position to where
+    # the English match starts, using the same proximity logic as
+    # _proximity_transliterate but in reverse (English → Arabic).
+    en_len = max(len(english_translation), 1)
+    src_len = max(len(transcription), 1)
+    en_pos = m.start(1)
+    target_ar_pos = int(en_pos / en_len * src_len)
+
+    # Arabic word tokenisation: split on whitespace, track character offsets.
+    ar_tokens: list[tuple[int, str]] = []
+    offset = 0
+    for word in transcription.split():
+        ar_tokens.append((offset, word))
+        offset += len(word) + 1
+
+    if not ar_tokens:
+        return args
+
+    best_token = min(ar_tokens, key=lambda t: abs(t[0] - target_ar_pos))[1]
+    # Strip common Arabic punctuation that may attach to the token.
+    best_token = best_token.strip("،؟!.،")
+
+    updates: dict[str, str] = {
+        "searcher_name": best_token,
+        "searcher_name_transliteration": latin_name,
+    }
+    return args.model_copy(update=updates)
+
+
+def _extraction_is_empty(args: ExtractIntakeFieldsArgs) -> bool:
+    """True when Gemma returned no extractable identity fields.
+
+    Checks only the fields that would populate the RecordCard roster.
+    A non-empty searcher_name, full_name, or at least one family_member
+    means extraction succeeded. Missing last_seen_* or marks alone is
+    not considered empty — those are detail fields, not identity fields.
+    """
+    return (
+        not args.searcher_name
+        and not args.full_name
+        and not args.family_members
+    )
 
 
 def _build_crisis_messages(
@@ -762,6 +961,14 @@ def _detect_present_status(
     return args.model_copy(update={"family_members": members})
 
 
+# First-person age markers in Arabic: "عمري N" / "عندي N سنة" / "أنا N سنة".
+# When a digit cluster matches one of these, the age belongs to the
+# searcher and must NOT be proximity-assigned to a family member.
+_SEARCHER_AGE_RE = re.compile(
+    r'(?:عمري|عندي|أنا)\s+(\d+)\s*سن[وة]'
+)
+
+
 def _extract_member_ages(
     args: ExtractIntakeFieldsArgs,
     transcription: str,
@@ -772,9 +979,10 @@ def _extract_member_ages(
     'عمره 8 سنوات' stated for محمد a few chars later).
 
     Only fires for members where Gemma left age=None.
-    """
-    import re
 
+    Searcher's own age ("عمري N سنة") is excluded from the pool so it
+    cannot leak onto the nearest family member via proximity matching.
+    """
     if not args.family_members:
         return args
 
@@ -785,10 +993,21 @@ def _extract_member_ages(
     if not age_mentions:
         return args
 
+    # Collect character offsets of the DIGIT GROUP within each searcher
+    # age mention so we can compare against age_match.start() directly.
+    # _SEARCHER_AGE_RE uses group(1) for the digit; m.start(1) is the
+    # offset of the digits inside "عمري 41 سنة" — same position that
+    # the broader age_mentions regex reports as its match start.
+    searcher_age_offsets: set[int] = {
+        m.start(1) for m in _SEARCHER_AGE_RE.finditer(transcription)
+    }
+
     updated = list(args.family_members)
     changed = False
 
     for age_match in age_mentions:
+        if age_match.start() in searcher_age_offsets:
+            continue  # searcher's own age — skip
         age_val = int(age_match.group(1))
         age_pos = age_match.start()
 
@@ -867,7 +1086,16 @@ def _map_extraction_to_intake(
     full_name = args.full_name
     relationship = args.relationship
     is_latin = lang in _LATIN_SCRIPT_LANGS
-    is_minor = args.age is not None and args.age < 18
+    # is_minor fires when the SEARCHER is under 18, OR when any MISSING
+    # family member is under 18 — the child-protection flag must cover
+    # both cases. Searcher-age check guards the unaccompanied-minor case;
+    # family-member check guards the "lost child" case (Mohamad, age 8).
+    searcher_minor = args.age is not None and args.age < 18
+    member_minor = any(
+        m.age is not None and m.age < 18 and m.status != "present"
+        for m in (args.family_members or [])
+    )
+    is_minor = searcher_minor or member_minor
 
     return {
         "full_name_source_script": full_name if full_name is not None else "",

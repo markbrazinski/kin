@@ -73,6 +73,18 @@ export async function postCrisisResolved(opts: {
   });
 }
 
+export async function postClearStorage(): Promise<void> {
+  const res = await fetch('/demo/clear-storage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`clear storage failed: ${res.status} ${text}`);
+  }
+}
+
 export async function postTransliteration(opts: {
   intakeId: string;
   value: string;

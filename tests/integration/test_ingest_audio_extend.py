@@ -203,11 +203,14 @@ async def test_ingest_audio_extend_raises_on_crisis_branch(
 
     # Now try to extend with a crisis-keyword utterance. Extraction fires
     # first (one call), then the guard raises before crisis persistence.
+    # searcher_name non-null so _extraction_is_empty() is False and the
+    # EN-translation fallback (Stage 3b) is not triggered.
     extend_ollama = _OllamaStub(
-        english="kill me now",
+        english="kill me now I am Yusuf",
         tool_call_response=ToolCallResult(
             name="extract_intake_fields",
-            arguments={"full_name": None, "relationship": None},
+            arguments={"full_name": None, "relationship": None,
+                       "searcher_name": "يوسف"},
         ),
     )
 
@@ -216,7 +219,7 @@ async def test_ingest_audio_extend_raises_on_crisis_branch(
             audio,
             "ar",
             "tent_a",
-            whisper=_WhisperStub("اقتلني الآن"),
+            whisper=_WhisperStub("اقتلني الآن أنا يوسف"),
             ollama=extend_ollama,
             storage=storage,
             intake_id=record.id,

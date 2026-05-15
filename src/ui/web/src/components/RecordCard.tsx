@@ -369,10 +369,16 @@ function GuardianProtection({ data, minor, expandedMap, setExpandedMap }: Guardi
 function RecordCard({ record, minor, justPopulatedKey: _justPopulatedKey, disabled, highlightKey }: RecordCardProps) {
   const [expandedMap, setExpandedMap] = React.useState<ExpandedMap>({});
 
-  const hasMinor = record.missingPersons.some(
+  // Real pipeline populates familyRoster (from SSE family_roster event);
+  // missingPersons is only set on the synthetic path. Check both so the
+  // MinorStrip fires on both paths.
+  const allMissing = record.familyRoster.filter(m => m.status !== 'WITH_SEARCHER').length > 0
+    ? record.familyRoster.filter(m => m.status !== 'WITH_SEARCHER')
+    : record.missingPersons;
+  const hasMinor = allMissing.some(
     m => typeof m.age === 'number' && m.age > 0 && m.age < 18
   );
-  const firstMinor = record.missingPersons.find(
+  const firstMinor = allMissing.find(
     m => typeof m.age === 'number' && m.age > 0 && m.age < 18
   );
   const minorDisplayName = firstMinor?.nameLatin || firstMinor?.name;

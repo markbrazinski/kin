@@ -78,6 +78,76 @@ describe('eventReducer', () => {
     expect(s2.auditEvents).toHaveLength(0);
   });
 
+  it('last_seen_location maps to lastSeenLocationSource, not lastSeenLocation (Gap 2)', () => {
+    /* Regression guard: the old FIELD_MAP entry mapped last_seen_location →
+       'lastSeenLocation'. After the Gap 2 fix it maps to
+       'lastSeenLocationSource' so the bilingual location display activates
+       when Gemma preserves Arabic/Farsi/Spanish text in that field. */
+    const env = makeAuditEnvelope({
+      event_type: 'field_extracted',
+      details: { field_name: 'last_seen_location', value: 'البوابة الجنوبية' },
+    });
+    const next = eventReducer(INITIAL_STATE, { type: 'envelope', envelope: env });
+    expect(next.record.lastSeenLocationSource).toBe('البوابة الجنوبية');
+    // lastSeenLocation must stay empty — the bilingual component renders
+    // lastSeenLocationSource as primary text and lastSeenLocation as the
+    // Latin transliteration. Setting both to the same Arabic string would
+    // render the Arabic twice.
+    expect(next.record.lastSeenLocation).toBe('');
+  });
+
+  it('separation_circumstance maps to circumstance (Gap 1)', () => {
+    const env = makeAuditEnvelope({
+      event_type: 'field_extracted',
+      details: {
+        field_name: 'separation_circumstance',
+        value: 'Separated during crowd surge at the southern gate checkpoint',
+      },
+    });
+    const next = eventReducer(INITIAL_STATE, { type: 'envelope', envelope: env });
+    expect(next.record.circumstance).toBe(
+      'Separated during crowd surge at the southern gate checkpoint',
+    );
+    // Unrelated location fields must be unaffected.
+    expect(next.record.lastSeenLocation).toBe('');
+    expect(next.record.lastSeenLocationSource).toBe('');
+  });
+
+  it('crisis-reorder: field_extracted events populate record before crisis audit events', () => {
+    /* Regression guard for the crisis-reorder fix: the SSE event order
+       after the fix is field_extracted* → crisis_detected → referral_issued.
+       Crisis events must NOT clear the record fields set by extraction. */
+    const familyRosterValue = [
+      { name: 'مريم', name_transliteration: 'Mariam', relationship_to_searcher: 'أخت',
+        status: 'missing', age: 32, last_seen_location: 'البوابة الجنوبية' },
+    ];
+    const events = [
+      makeAuditEnvelope({ event_type: 'field_extracted',
+        details: { field_name: 'searcher_name', value: 'يوسف العمر' } }),
+      makeAuditEnvelope({ event_type: 'field_extracted',
+        details: { field_name: 'family_roster', value: familyRosterValue } }),
+      makeAuditEnvelope({ event_type: 'field_extracted',
+        details: { field_name: 'last_seen_location', value: 'البوابة الجنوبية' } }),
+      makeAuditEnvelope({ event_type: 'crisis_detected', details: {} }),
+      makeAuditEnvelope({ event_type: 'referral_issued', details: {} }),
+    ];
+
+    let state: EventStreamState = INITIAL_STATE;
+    for (const env of events) {
+      state = eventReducer(state, { type: 'envelope', envelope: env });
+    }
+
+    // All extraction fields populated.
+    expect(state.record.searcherName).toBe('يوسف العمر');
+    expect(state.record.familyRoster).toHaveLength(1);
+    expect(state.record.familyRoster[0].name).toBe('مريم');
+    expect(state.record.lastSeenLocationSource).toBe('البوابة الجنوبية');
+    // All 5 events in auditEvents (crisis events don't drop or reset record).
+    expect(state.auditEvents).toHaveLength(5);
+    expect(state.auditEvents[3].payload.event_type).toBe('crisis_detected');
+    expect(state.auditEvents[4].payload.event_type).toBe('referral_issued');
+  });
+
   it('progressive field_extracted events on the same record accumulate without resetting', () => {
     /* Forward constraint from S5: extend path must not drop earlier
        fields when later turns add new ones. */

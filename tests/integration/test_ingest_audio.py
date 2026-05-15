@@ -176,15 +176,18 @@ async def test_ingest_audio_crisis_path_arabic_extracts_then_flags(
     audio = _audio_path(tmp_path)
 
     # "اقتلني" is a real keyword from _CRISIS_KEYWORDS["ar"].
-    whisper = _WhisperStub(text="اقتلني الآن")
+    # Include a searcher name so _extraction_is_empty() returns False
+    # and the EN-translation fallback (Stage 3b) is not triggered.
+    whisper = _WhisperStub(text="اقتلني الآن أنا يوسف")
     # Crisis-reorder: extraction fires first (call 1), then escalate_crisis
     # fires second (call 2). Two responses configured in order.
     ollama = _OllamaStub(
-        english="kill me now",
+        english="kill me now I am Yusuf",
         tool_call_responses=[
             ToolCallResult(
                 name="extract_intake_fields",
-                arguments={"full_name": None, "relationship": None},
+                arguments={"full_name": None, "relationship": None,
+                           "searcher_name": "يوسف"},
             ),
             ToolCallResult(
                 name="escalate_crisis",
@@ -497,14 +500,16 @@ async def test_ingest_audio_crisis_path_uses_gemma_referral(
     storage = _adapter(tmp_path)
     audio = _audio_path(tmp_path)
 
-    whisper = _WhisperStub(text="me suicido ahora")
+    whisper = _WhisperStub(text="me suicido ahora soy Carlos")
     # Crisis-reorder: extraction fires first, escalate_crisis second.
+    # searcher_name non-null so _extraction_is_empty() is False (no EN fallback).
     ollama = _OllamaStub(
-        english="I'm killing myself now",
+        english="I'm killing myself now I am Carlos",
         tool_call_responses=[
             ToolCallResult(
                 name="extract_intake_fields",
-                arguments={"full_name": None, "relationship": None},
+                arguments={"full_name": None, "relationship": None,
+                           "searcher_name": "Carlos"},
             ),
             ToolCallResult(
                 name="escalate_crisis",
@@ -560,10 +565,11 @@ async def test_ingest_audio_crisis_path_falls_back_to_static_lookup(
             tool_names = {t["function"]["name"] for t in tools}
             if "escalate_crisis" in tool_names:
                 raise InferenceTimeout("simulated cold-start timeout")
-            # Extraction succeeds with empty fields.
+            # Extraction succeeds with non-empty searcher so EN fallback skipped.
             return ToolCallResult(
                 name="extract_intake_fields",
-                arguments={"full_name": None, "relationship": None},
+                arguments={"full_name": None, "relationship": None,
+                           "searcher_name": "Carlos"},
             )
 
     storage = _adapter(tmp_path)
@@ -630,12 +636,15 @@ async def test_ingest_audio_crisis_extend_still_raises_value_error(
     # Extend with a crisis transcript. Extraction fires first (one call),
     # then the guard raises before crisis persistence — no escalate_crisis
     # call is made, no crisis flag is written.
-    crisis_whisper = _WhisperStub(text="me suicido ahora")
+    crisis_whisper = _WhisperStub(text="me suicido ahora soy Carlos")
     crisis_ollama = _OllamaStub(
-        english="kill myself",
+        english="kill myself I am Carlos",
+        # Non-empty searcher_name so _extraction_is_empty() is False
+        # and the EN-translation fallback (Stage 3b) is not triggered.
         tool_call_response=ToolCallResult(
             name="extract_intake_fields",
-            arguments={"full_name": None, "relationship": None},
+            arguments={"full_name": None, "relationship": None,
+                       "searcher_name": "Carlos"},
         ),
     )
 

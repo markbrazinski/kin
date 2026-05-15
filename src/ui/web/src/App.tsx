@@ -36,7 +36,7 @@ import {
   getActiveMatchCount,
   type MatchCandidatesMap,
 } from './state/matchCandidates';
-import { uploadAudioBlob, postCrisisResolved, postDemoRunIntake } from './lib/api';
+import { uploadAudioBlob, postCrisisResolved, postDemoRunIntake, postClearStorage } from './lib/api';
 import { voiceCopy } from './lib/voiceCopy';
 import { dirFor, t } from './lib/i18n';
 import type { AuditEnvelope, StructlogEnvelope } from './lib/sseEnvelope';
@@ -91,7 +91,7 @@ const YUSUF_DEMO_STEPS: DemoStep[] = [
     trace: { name: "extract_intake_fields", args: { searcher_name: "يوسف العمر" }, result: "ok" } },
   // Missing persons — Mariam first
   { at: 5200,
-    populateRaw: { missingPersons: [
+    populateRaw: { familyRoster: [
       { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING",
         lastSeen: "البوابة الجنوبية · Southern gate",
         marks: ["شامة صغيرة على الخد الأيمن · small mole right cheek"] },
@@ -99,7 +99,7 @@ const YUSUF_DEMO_STEPS: DemoStep[] = [
     trace: { name: "extract_intake_fields", args: { missing_persons: "[مريم, 32, sister]" }, result: "ok" } },
   // Missing persons — add Mohamad (flag_minor fires here)
   { at: 6400,
-    populateRaw: { missingPersons: [
+    populateRaw: { familyRoster: [
       { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING",
         lastSeen: "البوابة الجنوبية · Southern gate",
         marks: ["شامة صغيرة على الخد الأيمن · small mole right cheek"] },
@@ -108,9 +108,15 @@ const YUSUF_DEMO_STEPS: DemoStep[] = [
         marks: ["ندبة فوق الحاجب الأيسر · scar above left brow"] },
     ]},
     trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
-  // Roster — Aisha with searcher
+  // Roster — add Aisha with searcher (include all members)
   { at: 7400,
     populateRaw: { familyRoster: [
+      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أخت", status: "MISSING",
+        lastSeen: "البوابة الجنوبية · Southern gate",
+        marks: ["شامة صغيرة على الخد الأيمن · small mole right cheek"] },
+      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن أخت", status: "MISSING",
+        lastSeen: "البوابة الجنوبية · Southern gate",
+        marks: ["ندبة فوق الحاجب الأيسر · scar above left brow"] },
       { name: "عائشة", nameLatin: "Aisha", age: 32, relationship: "زوجة", status: "WITH_SEARCHER" },
     ]},
     trace: { name: "extract_intake_fields", args: { family_roster: "[عائشة, wife, WITH_SEARCHER]" }, result: "ok" } },
@@ -127,43 +133,43 @@ const YUSUF_DEMO_STEPS: DemoStep[] = [
   // crisis fires after this step — see runYusufDemo
 ];
 
-// SYNTHETIC_YUSUF_STEPS — slow-paced choreography for ⌘⇧Q.
-// 22 s waveform → 2 s processing pause → transcript T+24s → fields T+26–29.5s.
-// Crisis fires after runSteps at T+30s (see runSyntheticYusuf).
+// SYNTHETIC_YUSUF_STEPS — slow-paced choreography for ⌘⇧J.
+// 28 s waveform → 2 s processing pause → transcript T+30s → fields T+32–34s.
+// Crisis fires after runSteps at T+34.5s (see runSyntheticYusuf).
 const SYNTHETIC_YUSUF_STEPS: DemoStep[] = [
-  // Phase 1 — RECORDING (waveform animates for 22 s)
+  // Phase 1 — RECORDING (waveform animates for 28 s)
   { at: 0, state: "recording" },
-  // Phase 2 — PROCESSING PAUSE
-  { at: 22000, state: "processing" },
-  // Phase 3 — TRANSCRIPT (T+24s, two structlog events same tick)
-  { at: 24000,
+  // Phase 2 — PROCESSING PAUSE (T+28s)
+  { at: 28000, state: "processing" },
+  // Phase 3 — TRANSCRIPT (T+30s)
+  { at: 30000,
     structlog: { event: "whisper_transcription_start" },
-    trace: { name: "whisper.transcribe", args: { lang: "ar", duration: "22s", model: "medium" }, result: "segments: 1, confidence: 0.97" } },
-  { at: 24000,
+    trace: { name: "whisper.transcribe", args: { lang: "ar", duration: "28s", model: "medium" }, result: "segments: 1, confidence: 0.97" } },
+  { at: 30000,
     structlog: {
       event: "transcription_chunk",
       source: "أنا يوسف العمر، عمري واحد وأربعون سنة. أبحث عن أختي مريم وابن أختي محمد، عمره ثمان سنوات. زوجتي عائشة معي. آخر مرة عند البوابة الجنوبية قبل ثلاثة أيام خلال تدافع. محمد عنده ندبة فوق حاجبه الأيسر... ما عاد فيني أكمل.",
       translation: "I am Yusuf Al-Omar, forty-one years old. I am looking for my sister Mariam and my nephew Mohamad, he is eight years old. My wife Aisha is with me. Last seen at the southern gate three days ago during a crowd surge. Mohamad has a scar above his left eyebrow... I can't go on.",
     } },
-  { at: 24500,
+  { at: 30500,
     structlog: { event: "whisper_transcription_complete" },
     trace: { name: "whisper.translate", args: { source: "ar", target: "en" }, result: "complete" } },
-  // Phase 4 — EXTRACTION (T+26s)
-  { at: 26000, state: "extracting",
+  // Phase 4 — EXTRACTION (T+32s)
+  { at: 32000, state: "extracting",
     structlog: { event: "adapter_call_start" },
     trace: { name: "gemma.extract", args: { model: "gemma4:e2b", tool: "extract_intake_fields", searcher_name: "يوسف العمر", missing: "[مريم, محمد]", last_seen: "البوابة الجنوبية", date: "قبل ثلاثة أيام", marks: "ندبة فوق الحاجب الأيسر" }, result: "tool_call_emitted" } },
-  { at: 26000,
+  { at: 32000,
     populateRaw: { searcherName: "يوسف العمر", searcherNameLatin: "Yusuf Al-Omar" },
     structlog: { event: "tool_call_invoked", tool: "extract_intake_fields" } },
-  // T+26.5s: Mariam (no marks — scar belongs to Mohamad)
-  { at: 26500,
-    populateRaw: { missingPersons: [
+  // T+32.5s: Mariam
+  { at: 32500,
+    populateRaw: { familyRoster: [
       { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أختي",
         status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
     ] } },
-  // T+27s: add Mohamad with scar; flag_minor fires
-  { at: 27000,
-    populateRaw: { missingPersons: [
+  // T+33s: add Mohamad with scar; flag_minor fires
+  { at: 33000,
+    populateRaw: { familyRoster: [
       { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أختي",
         status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
       { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن أختي",
@@ -172,23 +178,26 @@ const SYNTHETIC_YUSUF_STEPS: DemoStep[] = [
     ] },
     structlog: { event: "tool_call_invoked", tool: "flag_minor", subject: "محمد", age: 8 },
     trace: { name: "flag_minor", args: { subject: "محمد", age: 8 }, result: "protection_required", highlight: true } },
-  // T+27.5s: family roster — Aisha with searcher
-  { at: 27500,
+  // T+33.5s: family roster — add Aisha with searcher (include all members)
+  { at: 33500,
     populateRaw: { familyRoster: [
+      { name: "مريم", nameLatin: "Mariam", age: 32, relationship: "أختي",
+        status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
+      { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن أختي",
+        status: "MISSING", lastSeen: "البوابة الجنوبية",
+        marks: ["ندبة فوق الحاجب الأيسر · scar above left brow"] },
       { name: "عائشة", nameLatin: "Aisha", relationship: "زوجتي", status: "WITH_SEARCHER" },
     ] } },
-  // T+28s: last seen location
-  { at: 28000,
+  // T+33.5s: last seen location + date + circumstance
+  { at: 33500,
     populate: "lastSeenLocation", value: "Southern gate — camp perimeter",
     lastSeenLocationSource: "البوابة الجنوبية" },
-  // T+28.5s: last seen date
-  { at: 28500,
+  { at: 33500,
     populate: "lastSeenDate", value: "3 days ago" },
-  // T+29s: circumstance
-  { at: 29000,
+  { at: 33500,
     populate: "circumstance", value: "Separated during crowd surge at the southern gate" },
-  // T+29.5s: physical description — crisis fires 500 ms after this
-  { at: 29500,
+  // T+34s: physical description — crisis fires 500 ms after this → T+34.5s
+  { at: 34000,
     populate: "physicalDesc", value: "Mohamad: scar above left eyebrow" },
 ];
 
@@ -211,14 +220,14 @@ const MARIAM_DEMO_STEPS: DemoStep[] = [
     trace: { name: "extract_intake_fields", args: { searcher_name: "مريم صالح" }, result: "ok" } },
   // Missing — Yusuf (brother) — with per-person lastSeen + marks (complete intake)
   { at: 5200,
-    populateRaw: { missingPersons: [
+    populateRaw: { familyRoster: [
       { name: "يوسف", nameLatin: "Yusuf", age: 41, relationship: "أخ", status: "MISSING",
         lastSeen: "البوابة الجنوبية · Southern gate", marks: ["أصلع جزئياً · partial baldness"] },
     ]},
     trace: { name: "extract_intake_fields", args: { missing_persons: "[يوسف, 35, brother]" }, result: "ok" } },
   // Missing — Mohamad (son, minor) — with per-person lastSeen + marks
   { at: 6400,
-    populateRaw: { missingPersons: [
+    populateRaw: { familyRoster: [
       { name: "يوسف", nameLatin: "Yusuf", age: 41, relationship: "أخ", status: "MISSING",
         lastSeen: "البوابة الجنوبية · Southern gate", marks: ["أصلع جزئياً · partial baldness"] },
       { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن", status: "MISSING",
@@ -264,13 +273,13 @@ const SYNTHETIC_MARIAM_STEPS: DemoStep[] = [
     structlog: { event: "tool_call_invoked", tool: "extract_intake_fields" } },
   // T+20.5s: Yusuf (no marks in this intake)
   { at: 20500,
-    populateRaw: { missingPersons: [
+    populateRaw: { familyRoster: [
       { name: "يوسف", nameLatin: "Yusuf", age: 41, relationship: "أخي",
         status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
     ] } },
   // T+21s: add Mohamad with scar; flag_minor fires
   { at: 21000,
-    populateRaw: { missingPersons: [
+    populateRaw: { familyRoster: [
       { name: "يوسف", nameLatin: "Yusuf", age: 41, relationship: "أخي",
         status: "MISSING", lastSeen: "البوابة الجنوبية", marks: [] },
       { name: "محمد", nameLatin: "Mohamad", age: 8, relationship: "ابن",
@@ -614,6 +623,19 @@ export function VoicePanel({
         syntheticQueued();
         return;
       }
+      // Real-pipeline demo file queued via ⌘⇧Y/⌘⇧M — fire it the same
+      // way the ready-phase branch does: reset stream, then start pipeline.
+      const demoQueued = demoFileRef.current;
+      if (demoQueued) {
+        demoFileRef.current = null;
+        onBeginNewIntake?.();   // onReset() — clears record + SSE state
+        onBegin?.();             // handleBeginIntake — resets refs, starts timer
+        phaseBegin();
+        setLastPostStatus(null);
+        phaseForceRecording();
+        void startDemoFile(demoQueued);
+        return;
+      }
       onBeginNewIntake?.();
       return;
     }
@@ -899,6 +921,7 @@ function App() {
   const [timerRunning, setTimerRunning]       = useState(false);
   const [calls, setCalls]                     = useState<TraceCall[]>([]);
   const [highlightedCall, setHighlightedCall] = useState<number | null>(null);
+  const [clearStatus, setClearStatus]         = useState<string | null>(null);
   const demoStartRef = useRef<number | null>(null);
   const demoFileRef = useRef<'yusuf' | 'mariam' | null>(null);
   const callIdRef = useRef(0);
@@ -918,11 +941,22 @@ function App() {
   // the useEffect below. Disabled in split view, where each IntakePanel
   // owns its own filtered stream and the unfiltered App-level
   // subscription would be a redundant third EventSource.
+  // Incremented by ⌘⇧X (clear-storage) to force EventSource reconnect.
+  // After storage files are truncated/deleted, the SSE tail's file handle
+  // points past EOF of the new empty file and never sees new events.
+  // Changing basePath closes the old EventSource and opens a fresh one,
+  // which re-runs _audit_tail from the current EOF of the new file.
+  const [streamKey, setStreamKey] = useState(0);
   const { state: streamState, clearIntakeId, reset: resetStream } = useEventStream({
     enabled: view !== 'split',
+    basePath: `/intake/stream?k=${streamKey}`,
   });
   const seenAuditCount = useRef(0);
   const seenStructlogCount = useRef(0);
+  // Always-current ref for streamState.intakeId — used in callbacks that
+  // may close over a stale render's streamState (e.g. onCrisisResponse).
+  const streamIntakeIdRef = useRef<string | null>(null);
+  streamIntakeIdRef.current = streamState.intakeId;
   /* Bundle 1.5 S5: high-water-mark for the match_proposed dispatcher.
      Prevents replaying past events on every render of the watcher
      useEffect; advances as new events land. */
@@ -937,8 +971,18 @@ function App() {
   useEffect(() => {
     if (streamState.auditEvents.length > seenAuditCount.current) {
       seenAuditCount.current = streamState.auditEvents.length;
-      // Use the reducer's already-mapped record (full RecordData shape).
-      setRecord(streamState.record);
+      // Merge SSE record fields into local record, preserving metadata
+      // fields (recordId, language, syncStatus, capturedAt) that are set
+      // outside the reducer — e.g. by the onCrisisResponse snapshot.
+      // Without this, each bridge fire after the snapshot clobbers those
+      // fields back to undefined (they're not in FIELD_MAP).
+      setRecord(prev => ({
+        ...streamState.record,
+        recordId: prev.recordId || streamState.record.recordId,
+        capturedAt: prev.capturedAt || streamState.record.capturedAt,
+        language: prev.language || streamState.record.language,
+        syncStatus: prev.syncStatus || streamState.record.syncStatus,
+      }));
       // Surface the most-recently-changed field for the populate animation.
       const last = streamState.auditEvents[streamState.auditEvents.length - 1];
       if (last && last.payload.event_type === 'field_extracted') {
@@ -1039,7 +1083,16 @@ function App() {
     demoStartRef.current = performance.now();
     setTimerSec(0);
     setTimerRunning(true);
-  }, []);
+    // Clear stale SSE state and high-water-mark refs so the bridge
+    // useEffects fire correctly on the first events of this new intake.
+    // resetStream() zeros streamState.auditEvents so streamState.intakeId
+    // starts null; the refs ensure the bridge condition fires on arrival
+    // of the first intake_created event rather than skipping it.
+    resetStream();
+    seenAuditCount.current = 0;
+    seenStructlogCount.current = 0;
+    seenMatchProposedCount.current = 0;
+  }, [resetStream]);
 
   // Stable identity prevents VoicePanel's useEffect([phase, onPhaseChange])
   // from re-firing on every App render. Timer is now owned by onBegin;
@@ -1106,6 +1159,19 @@ function App() {
       // ⌘⇧R — reset and re-seed
       if (e.shiftKey && (e.key === 'R' || e.key === 'r')) {
         e.preventDefault(); onReset(); return;
+      }
+      // ⌘⇧X — clear all storage records (pre-recording-take cleanup)
+      if (e.shiftKey && (e.key === 'X' || e.key === 'x')) {
+        e.preventDefault();
+        postClearStorage()
+          .then(() => {
+            onReset();
+            setStreamKey(k => k + 1); // force EventSource reconnect — see streamKey
+            setClearStatus('Records cleared');
+            setTimeout(() => setClearStatus(null), 2500);
+          })
+          .catch((err: unknown) => setClearStatus(String(err)));
+        return;
       }
       // ⌘D (no shift) — TracePanel toggle
       if (!e.shiftKey && (e.key === 'd' || e.key === 'D')) {
@@ -1189,38 +1255,44 @@ function App() {
 
   // Maps a completed RecordData to the NetworkCardData shape consumed by
   // the match graph. Side A = the saved record from the previous intake.
-  const toNetworkCard = (r: RecordData, tone: 'warm' | 'cool'): NetworkCardData => ({
-    title: r.recordId ? `Session ${r.recordId.slice(0, 8)}` : 'Intake',
-    tone,
-    speakerLanguage: (r.language?.toLowerCase().startsWith('ar') ? 'ar'
-                    : r.language?.toLowerCase().startsWith('fa') ? 'fa'
-                    : r.language?.toLowerCase().startsWith('es') ? 'es'
-                    : 'en') as Language,
-    searcherName: r.searcherName || undefined,
-    searcherNameLatin: r.searcherNameLatin || undefined,
-    missingName: r.missingPersons[0]?.name ?? r.name,
-    missingNameLatin: r.missingPersons[0]?.nameLatin,
-    missingAge: r.missingPersons[0]?.age,
-    missingRelationship: r.missingPersons[0]?.relationship,
-    age: r.missingPersons[0]?.age?.toString() ?? r.age,
-    lastSeen: r.lastSeenLocationSource || r.lastSeenLocation,
-    lastSeenLatin: r.lastSeenLocationSource ? r.lastSeenLocation : undefined,
-    missingPersons: r.missingPersons.map(mp => ({
-      name: mp.name,
-      nameLatin: mp.nameLatin,
-      relationship: mp.relationship,
-      age: mp.age,
-    })),
-    rosterMembers: r.familyRoster.map(fm => ({
-      name: fm.name,
-      nameLatin: fm.nameLatin,
-      relationship: fm.relationship,
-      status: fm.status === 'WITH_SEARCHER' ? 'present'
-            : fm.status === 'MISSING' ? 'missing'
-            : 'known',
-      age: fm.age,
-    })),
-  });
+  const toNetworkCard = (r: RecordData, tone: 'warm' | 'cool'): NetworkCardData => {
+    // Real pipeline populates familyRoster (SSE family_roster event);
+    // synthetic path populates missingPersons directly. Use whichever
+    // has data so the match graph works on both paths.
+    const missingFromRoster = r.familyRoster.filter(m => m.status !== 'WITH_SEARCHER');
+    const missingList = missingFromRoster.length > 0 ? missingFromRoster : r.missingPersons;
+    const primary = missingList[0];
+    return {
+      title: r.recordId ? `Session ${r.recordId.slice(0, 8)}` : 'Intake',
+      tone,
+      speakerLanguage: (r.language?.toLowerCase().startsWith('ar') ? 'ar'
+                      : r.language?.toLowerCase().startsWith('fa') ? 'fa'
+                      : r.language?.toLowerCase().startsWith('es') ? 'es'
+                      : 'en') as Language,
+      searcherName: r.searcherName || undefined,
+      searcherNameLatin: r.searcherNameLatin || undefined,
+      missingName: primary?.name ?? r.name,
+      missingNameLatin: primary?.nameLatin,
+      missingAge: primary?.age,
+      missingRelationship: primary?.relationship,
+      age: primary?.age?.toString() ?? r.age,
+      lastSeen: r.lastSeenLocationSource || r.lastSeenLocation,
+      lastSeenLatin: r.lastSeenLocationSource ? r.lastSeenLocation : undefined,
+      missingPersons: missingList.map(mp => ({
+        name: mp.name,
+        nameLatin: mp.nameLatin,
+        relationship: mp.relationship,
+        age: mp.age,
+      })),
+      rosterMembers: r.familyRoster.filter(m => m.status === 'WITH_SEARCHER').map(fm => ({
+        name: fm.name,
+        nameLatin: fm.nameLatin,
+        relationship: fm.relationship,
+        status: 'present' as const,
+        age: fm.age,
+      })),
+    };
+  };
 
   const onReset = () => {
     // Reset clears App-level demo state (record/phase/calls/timer)
@@ -1247,6 +1319,14 @@ function App() {
     // pinned to the previous turn's record id and the next mic turn
     // POSTs as an extend (HTTP 500 on crisis-after-Reset).
     resetStream();
+    // Reset high-water-mark refs so the bridge useEffects fire on
+    // the first audit/structlog events of the next session. Without
+    // this, streamState.auditEvents.length (reset to 0 by resetStream)
+    // never exceeds the stale seenAuditCount and setRecord is never
+    // called — leaving the RecordCard empty after onReset().
+    seenAuditCount.current = 0;
+    seenStructlogCount.current = 0;
+    seenMatchProposedCount.current = 0;
   };
 
   // Shared step executor for both Yusuf and Mariam sequencers.
@@ -1415,13 +1495,12 @@ function App() {
       language: 'Arabic (Levantine)',
       searcherName: 'يوسف العمر',
       searcherNameLatin: 'Yusuf Al-Omar',
-      missingPersons: [
+      missingPersons: [],
+      familyRoster: [
         { name: 'مريم', nameLatin: 'Mariam', age: 32, relationship: 'أختي', status: 'MISSING',
           lastSeen: 'البوابة الجنوبية', marks: [] },
         { name: 'محمد', nameLatin: 'Mohamad', age: 8, relationship: 'ابن أختي', status: 'MISSING',
           lastSeen: 'البوابة الجنوبية', marks: ['ندبة فوق الحاجب الأيسر · scar above left brow'] },
-      ],
-      familyRoster: [
         { name: 'عائشة', nameLatin: 'Aisha', relationship: 'زوجتي', status: 'WITH_SEARCHER' },
       ],
       lastSeenLocation: 'Southern gate — camp perimeter',
@@ -1523,9 +1602,10 @@ function App() {
     // Snapshot current record as Side A for the match graph, but only if
     // prevRecord isn't already seeded with a different intake (synthetic
     // Mariam demo pre-seeds Yusuf as Side A before Mariam's fields populate).
-    setPrevRecord(prev =>
-      prev && prev.recordId && prev.recordId !== record.recordId ? prev : record
-    );
+    setPrevRecord(prev => {
+      const snap = { ...record, recordId: record.recordId ?? streamState.intakeId ?? undefined };
+      return prev && prev.recordId && prev.recordId !== snap.recordId ? prev : snap;
+    });
     // No auto-route. If activeMatchCount > 0 the queue rail badge
     // lights up; worker clicks the badge to navigate to match view.
   };
@@ -1615,6 +1695,22 @@ function App() {
                       // intakeId so next mic turn takes the create
                       // path (S5 lock #4: extend-into-crisis is
                       // ValueError). See ADR-004 REV 3.
+                      //
+                      // Snapshot intakeId and language into record BEFORE
+                      // clearIntakeId() nulls streamState.intakeId — the
+                      // RecordCard metadata strip reads record.recordId as
+                      // a fallback when streamState.intakeId is null.
+                      // Use the ref (not the closure) so stale renders
+                      // don't produce a null intakeId here.
+                      const snapId = streamIntakeIdRef.current;
+                      if (snapId) {
+                        setRecord(prev => ({
+                          ...prev,
+                          recordId: snapId,
+                          language: prev.language || LANG_LABELS[speakerLanguage] || speakerLanguage,
+                          syncStatus: prev.syncStatus ?? 'queued',
+                        }));
+                      }
                       setCrisisMessage(msg);
                       setCrisisOpen(true);
                       clearIntakeId();
@@ -1662,6 +1758,8 @@ function App() {
                     missingPersonsCount={record.familyRoster.filter(m => m.status !== 'WITH_SEARCHER').length}
                     detailedCount={record.familyRoster.filter(
                       m => m.status !== 'WITH_SEARCHER' && (
+                        !!m.age ||
+                        !!m.relationship ||
                         !!m.lastSeen || !!record.lastSeenLocation ||
                         (m.marks && m.marks.length > 0)
                       )
@@ -1713,6 +1811,10 @@ function App() {
                   <IconLock size={12} />
                   <span>Record stored on this device. Will sync when you next connect to the local hub.</span>
                 </div>
+
+                {clearStatus && (
+                  <div className="mt-3 text-[12px] text-green font-medium">{clearStatus}</div>
+                )}
               </>
             )}
 
@@ -1760,7 +1862,7 @@ function App() {
             )}
 
             {view === "match" && (
-              networkMatchResult && networkMatchResult.node_matches.length >= 2
+              networkMatchResult && networkMatchResult.node_matches.length >= 1
                 ? <NetworkMatch
                     phase={matchPhase}
                     onBack={() => setView("single")}
@@ -1770,7 +1872,7 @@ function App() {
                     recordA={prevRecord ? toNetworkCard(prevRecord, 'warm') : undefined}
                     recordB={toNetworkCard(record, 'cool')}
                     intakeIdA={prevRecord?.recordId}
-                    intakeIdB={record.recordId}
+                    intakeIdB={streamState.intakeId ?? record.recordId}
                   />
                 : <TransliterationMatch
                     phase={matchPhase}

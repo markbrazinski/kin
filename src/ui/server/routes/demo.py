@@ -228,12 +228,33 @@ async def seed_fixture(body: SeedFixtureRequest, request: Request) -> dict[str, 
     }
 
 
+# ─── POST /demo/clear-storage ────────────────────────────────────────────────
+
+
+@router.post("/demo/clear-storage")
+async def clear_storage(request: Request) -> dict[str, Any]:
+    """Truncate all three JSONL storage files.
+
+    Called by the ⌘⇧X keybinding before a recording take so the matcher
+    starts from a clean slate without requiring a manual shell command.
+    """
+    from integration.storage_adapter import StorageAdapter
+    from integration.system_clock import SYSTEM_CLOCK
+
+    storage_dir: Path = request.app.state.storage_dir
+    storage = StorageAdapter(storage_dir, SYSTEM_CLOCK)
+    storage.clear_all()
+
+    log.info("storage_cleared", storage_dir=str(storage_dir))
+    return {"status": "cleared"}
+
+
 # ─── POST /demo/run-intake ────────────────────────────────────────────────────
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _DEMO_AUDIO: dict[str, Path] = {
-    "yusuf": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_yusuf_take_2_demo.wav",
+    "yusuf": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_yusuf_take_3_demo.wav",
     "mariam": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_Mariam_take 2 demo.wav",
 }
 
