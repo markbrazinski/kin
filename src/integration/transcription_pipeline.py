@@ -393,6 +393,11 @@ async def ingest_audio(
     args = _detect_present_status(args, result.transcription)
     args = _extract_member_ages(args, result.transcription)
     args = _promote_first_missing_to_primary(args)
+    # Gemma sometimes bundles location+date+verb into separation_circumstance
+    # (e.g. 'فقدنا قبل ثلاثة أيام عند البوابة الجنوبية' on Mariam Take 2).
+    # Backstop: when last_seen_location is null AND the circumstance string
+    # contains an Arabic location preposition + place name, split them out.
+    args = _split_location_from_circumstance(args)
     # Backfill searcher_name BEFORE _fill_transliterations runs — otherwise
     # the searcher's transliteration step inside _fill_transliterations
     # consumes a candidate from the English token pool and offsets all
@@ -1244,6 +1249,84 @@ def _promote_first_missing_to_primary(
         "full_name": first_missing.name,
         "relationship": first_missing.relationship_to_searcher or args.relationship,
     })
+
+
+# Arabic location prepositions that introduce a place reference.
+# Word-boundary anchored so a clitic 'ب' attached to another token
+# (e.g. 'قبل' "before") does not match. Capturing group 2 is the
+# place name span (optional 'ال' article kept in group 1).
+_AR_LOCATION_PREP_RE = re.compile(
+    r'(?:^|\s)(عند|في|داخل|قرب|جنب|على)\s+((?:ال)?[؀-ۿ]+(?:\s+(?!قبل|منذ|بعد)[؀-ۿ]+){0,2})'
+)
+
+# Arabic time/date phrases that introduce a temporal reference:
+#   قبل N أيام/يوم/أسبوع/شهر/سنة   "N days/weeks/months/years ago"
+#   قبل أسبوع                       "a week ago" (no number)
+#   منذ ...                          "since ..."
+_AR_DATE_RE = re.compile(
+    r'((?:قبل|منذ)\s+'
+    r'(?:(?:\d+|واحد|اثنان|ثلاثة|اربعة|خمسة|ستة|سبعة|ثمان(?:ية)?|تسعة|عشرة)\s+)?'
+    r'(?:يوم|أيام|أسبوع|أسابيع|شهر|أشهر|سنة|سنوات))'
+)
+
+
+def _split_location_from_circumstance(
+    args: ExtractIntakeFieldsArgs,
+) -> ExtractIntakeFieldsArgs:
+    """Backstop: when Gemma bundled location/date inside
+    separation_circumstance, split them into the dedicated fields.
+
+    Only fires when (a) separation_circumstance is set, (b) at least
+    one of last_seen_location / last_seen_date is empty, and (c) the
+    Arabic prep/date regex finds a candidate inside the circumstance
+    string. Idempotent — running twice yields the same result.
+    """
+    circ = args.separation_circumstance
+    if not circ:
+        return args
+    if args.last_seen_location and args.last_seen_date:
+        return args
+
+    updates: dict[str, Any] = {}
+    circ_remaining = circ
+
+    if not args.last_seen_location:
+        loc_match = _AR_LOCATION_PREP_RE.search(circ)
+        if loc_match:
+            # group(1) = preposition, group(2) = place-name span (with
+            # optional 'ال' article preserved).
+            place_full = loc_match.group(2).strip()
+            # Heuristic guard: short tokens (< 3 chars) are unlikely to
+            # be a real place name; skip.
+            if len(place_full) >= 3:
+                updates["last_seen_location"] = place_full
+                circ_remaining = (
+                    circ_remaining[: loc_match.start()].strip()
+                    + " "
+                    + circ_remaining[loc_match.end():].strip()
+                ).strip()
+
+    if not args.last_seen_date:
+        date_match = _AR_DATE_RE.search(circ_remaining)
+        if date_match:
+            updates["last_seen_date"] = date_match.group(1).strip()
+            circ_remaining = (
+                circ_remaining[: date_match.start()].strip()
+                + " "
+                + circ_remaining[date_match.end():].strip()
+            ).strip()
+
+    # If we extracted anything, also clean up the residual circumstance.
+    if updates:
+        # If only the verb stub remains (e.g. just "فقدنا"), keep it;
+        # otherwise normalize whitespace.
+        circ_remaining = " ".join(circ_remaining.split())
+        if circ_remaining and circ_remaining != circ:
+            updates["separation_circumstance"] = circ_remaining or None
+
+    if not updates:
+        return args
+    return args.model_copy(update=updates)
 
 
 def _map_extraction_to_intake(
