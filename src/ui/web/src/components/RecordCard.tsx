@@ -140,9 +140,10 @@ type PersonRowProps = {
   role: 'searcher' | 'missing' | 'roster';
   isMinor?: boolean;
   lastSeenFallback?: string;
+  lastSeenFallbackLatin?: string;
 };
 
-function PersonRow({ member, role, isMinor, lastSeenFallback }: PersonRowProps) {
+function PersonRow({ member, role, isMinor, lastSeenFallback, lastSeenFallbackLatin }: PersonRowProps) {
   const rtl = isRtlText(member.name);
   const showNested = role === 'missing';
 
@@ -190,16 +191,25 @@ function PersonRow({ member, role, isMinor, lastSeenFallback }: PersonRowProps) 
       {/* Per-person nested attrs — missing persons only, always rendered */}
       {showNested && (
         <div className="ml-12 mt-1 mb-3 border-l-2 border-hair pl-3 space-y-2">
-          {/* LAST SEEN */}
+          {/* LAST SEEN — show source + transliteration (if both exist) */}
           <div>
             <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-0.5">
               <IconMapPin size={11} />
               Last seen
             </div>
-            {(member.lastSeen ?? lastSeenFallback)
-              ? <span className="text-[13px] text-ink">{member.lastSeen ?? lastSeenFallback}</span>
-              : <span className="text-[13px] text-muted">—</span>
-            }
+            {(() => {
+              const source = member.lastSeen ?? lastSeenFallback;
+              const latin = member.lastSeen ? undefined : lastSeenFallbackLatin;
+              if (!source) return <span className="text-[13px] text-muted">—</span>;
+              return (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[13px] text-ink">{source}</span>
+                  {latin && latin !== source && (
+                    <span className="text-[12.5px] text-muted">{latin}</span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
           {/* MARKS — hidden when empty */}
           {(member.marks && member.marks.length > 0) && (
@@ -232,6 +242,7 @@ type FamilyNetworkProps = {
   setExpandedMap: Dispatch<SetStateAction<ExpandedMap>>;
   highlightKey: string | null;
   lastSeenFallback?: string;
+  lastSeenFallbackLatin?: string;
 };
 
 function FamilyNetworkSection({
@@ -243,6 +254,7 @@ function FamilyNetworkSection({
   setExpandedMap,
   highlightKey,
   lastSeenFallback,
+  lastSeenFallbackLatin,
 }: FamilyNetworkProps) {
   const hasAny = searcherName || missingPersons.length > 0 || familyRoster.length > 0;
   if (!hasAny) return null;
@@ -309,6 +321,7 @@ function FamilyNetworkSection({
                   role="missing"
                   isMinor={typeof m.age === 'number' && m.age > 0 && m.age < 18}
                   lastSeenFallback={lastSeenFallback}
+                  lastSeenFallbackLatin={lastSeenFallbackLatin}
                 />
               ))}
             </div>
@@ -414,7 +427,8 @@ function RecordCard({ record, minor, justPopulatedKey: _justPopulatedKey, disabl
             expandedMap={expandedMap}
             setExpandedMap={setExpandedMap}
             highlightKey={highlightKey ?? null}
-            lastSeenFallback={record.lastSeenLocation || undefined}
+            lastSeenFallback={record.lastSeenLocationSource || record.lastSeenLocation || undefined}
+            lastSeenFallbackLatin={record.lastSeenLocation || undefined}
           />
 
           {record.physicalDesc && (

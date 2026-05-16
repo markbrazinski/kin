@@ -58,6 +58,7 @@ const FIELD_MAP: Partial<Record<string, keyof RecordData>> = {
   relationship_to_seeker: 'relationship',
   age: 'age',
   last_seen_location: 'lastSeenLocationSource',
+  last_seen_location_transliteration: 'lastSeenLocation',
   last_seen_date: 'lastSeenDate',
   distinguishing_marks: 'physicalDesc',
   separation_circumstance: 'circumstance',
@@ -96,7 +97,13 @@ export function mapAuditEventToRecord(
     if (!Array.isArray(rawValue)) return record;
     const members: FamilyMember[] = rawValue.map((m: Record<string, unknown>) => {
       const marksRaw = m.distinguishing_marks as string | null | undefined;
-      const marks = marksRaw ? [marksRaw] : undefined;
+      const marksTranslit = m.distinguishing_marks_transliteration as string | null | undefined;
+      // Render Arabic and English side-by-side in the marks array,
+      // mirroring the name/nameLatin pattern. RecordCard maps each
+      // string to a separate <li>.
+      const marks: string[] | undefined = marksRaw
+        ? (marksTranslit ? [marksRaw, marksTranslit] : [marksRaw])
+        : undefined;
       return {
         name: (m.name as string) ?? '',
         nameLatin: (m.name_transliteration as string | null) ?? undefined,

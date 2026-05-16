@@ -39,6 +39,23 @@ WHISPER_DEVICE = "cpu"
 WHISPER_COMPUTE_TYPE = "int8"
 WHISPER_BEAM_SIZE = 5
 PAD_FILTER = "adelay=1000|1000,apad=pad_dur=0.5"
+
+# Per-language Whisper initial_prompt biases the first decoder steps
+# toward this vocabulary. Used to anchor common Arabic given names and
+# place-names that the medium model otherwise mis-transcribes ("محمد"
+# transcribed as "محمل" was observed on a Yusuf Take 4 run). Keep each
+# entry ≤ 224 tokens. Prompt content is biasing vocabulary, not
+# instructions — Whisper is not an instruction-following model.
+_INITIAL_PROMPTS: dict[str, str] = {
+    # Short, names-only vocabulary. Empirically, longer prompts (with
+    # place-names and trailing context) over-biased the decoder's first
+    # 30s segment and caused it to drop the speaker's "أنا [name]" self-
+    # introduction on shorter utterances (observed regression on
+    # Mariam Take 2 with a long prompt). Names-only keeps the speaker
+    # intro intact AND fixes the common 'محمد'→'محمل' mis-transcription.
+    "ar": "محمد، مريم، يوسف، عائشة، ندبة",
+    "fa": "محمد، مریم، یوسف، عائشه",
+}
 TRUNCATE_CHARS = 500
 
 
@@ -201,11 +218,14 @@ class WhisperAdapter:
     ) -> tuple[str, dict[str, Any]]:
         """Sync body of the timeout race. Exercised inside asyncio.to_thread."""
         wall_start = self._clock.monotonic()
+        initial_prompt = _INITIAL_PROMPTS.get(lang)
         segments, info = self._model.transcribe(
             str(padded_path),
             task="transcribe",
             language=lang,
             beam_size=self._beam_size,
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=False,
         )
         text_parts: list[str] = []
         seg_count = 0

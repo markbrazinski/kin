@@ -155,6 +155,11 @@ class FamilyMember(BaseModel):
     distinguishing_marks: str | None = None
     """Free-text identifying feature for this member (scar, mark,
     clothing, hair, tattoo). Source language preserved."""
+    distinguishing_marks_transliteration: str | None = None
+    """English (Latin-script) translation of distinguishing_marks.
+    Backfilled deterministically via OllamaAdapter.translate() in the
+    extraction pipeline post-processing. Null for Latin-script source
+    languages (the source already is English/Spanish/French)."""
 
 
 class RFLRecord(BaseModel):

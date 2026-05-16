@@ -45,6 +45,7 @@ class FamilyMemberArg(BaseModel):
     age: int | None = None
     last_seen_location: str | None = None
     distinguishing_marks: str | None = None
+    distinguishing_marks_transliteration: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -270,6 +271,7 @@ class ExtractIntakeFieldsArgs(BaseModel):
     relationship: str | None = None
     age: int | None = None
     last_seen_location: str | None = None
+    last_seen_location_transliteration: str | None = None
     last_seen_date: str | None = None
     distinguishing_features: str | None = None
     separation_circumstance: str | None = None

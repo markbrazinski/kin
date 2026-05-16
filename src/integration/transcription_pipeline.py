@@ -56,7 +56,7 @@ from core.rfl_schema import (
 )
 from core.storage_schemas import IntakeRecord, MatchLink
 from core.tool_calling import ToolCallResult
-from integration._errors import InferenceFailed, InferenceTimeout, InvalidToolCall
+from integration._errors import AdapterError, InferenceFailed, InferenceTimeout, InvalidToolCall
 from integration.escalate_crisis_tool import (
     ESCALATE_CRISIS_TOOL,
     EscalateCrisisArgs,
@@ -407,6 +407,30 @@ async def ingest_audio(
     if lang not in _LATIN_SCRIPT_LANGS:
         args = _fill_transliterations(args, result.transcription, result.english_translation)
 
+    # For non-Latin languages, translate per-member distinguishing_marks
+    # via a short Gemma translate call. Caseworker-side UI shows the
+    # Arabic source + English translation side-by-side. One translate
+    # call per member with marks (~0.3s warm) — typically 0–1 per intake.
+    if lang not in _LATIN_SCRIPT_LANGS:
+        args = await _translate_member_marks(args, lang, ollama=ollama)
+
+    # Same pattern for last_seen_location at the record level: caseworkers
+    # need an English form of "البوابة الجنوبية" → "Southern gate" to
+    # render alongside the Arabic source. One translate call when present.
+    if (
+        lang not in _LATIN_SCRIPT_LANGS
+        and args.last_seen_location
+        and not args.last_seen_location_transliteration
+    ):
+        try:
+            en = (await ollama.translate(args.last_seen_location, lang)).strip()
+            if en:
+                args = args.model_copy(
+                    update={"last_seen_location_transliteration": en}
+                )
+        except AdapterError:
+            log.info("last_seen_translation_skip", lang=lang)
+
     # Stage 4: map extraction → IntakeRecord fields.
     intake_fields = _map_extraction_to_intake(args, lang)
 
@@ -734,6 +758,54 @@ def _fill_transliterations(
     return args.model_copy(update=updates)
 
 
+async def _translate_member_marks(
+    args: ExtractIntakeFieldsArgs,
+    lang: str,
+    *,
+    ollama: _OllamaPort,
+) -> ExtractIntakeFieldsArgs:
+    """Backfill English distinguishing_marks_transliteration on each
+    family member that has marks in source script.
+
+    One short Gemma translate() call per member with marks. Skipped
+    when the member already has a transliteration or has no marks.
+    Failures (timeout, adapter error) leave the field None — the UI
+    falls back to the source-script string.
+    """
+    if not args.family_members:
+        return args
+
+    updated: list[FamilyMemberArg] = []
+    changed = False
+    for member in args.family_members:
+        if (
+            member.distinguishing_marks
+            and not member.distinguishing_marks_transliteration
+        ):
+            try:
+                en = await ollama.translate(member.distinguishing_marks, lang)
+                en = en.strip()
+                if en:
+                    updated.append(
+                        member.model_copy(
+                            update={"distinguishing_marks_transliteration": en}
+                        )
+                    )
+                    changed = True
+                    continue
+            except AdapterError:
+                log.info(
+                    "marks_translation_skip",
+                    member_name=member.name,
+                    lang=lang,
+                )
+        updated.append(member)
+
+    if not changed:
+        return args
+    return args.model_copy(update={"family_members": updated})
+
+
 def _fill_searcher_name(
     args: ExtractIntakeFieldsArgs,
     transcription: str,
@@ -865,6 +937,7 @@ def _map_family_members(
                 age=m.age,
                 last_seen_location=m.last_seen_location,
                 distinguishing_marks=m.distinguishing_marks,
+                distinguishing_marks_transliteration=m.distinguishing_marks_transliteration,
             )
         )
     return result
@@ -1232,6 +1305,7 @@ def _map_extraction_to_intake(
         "age": primary_age,
         "is_minor": is_minor,
         "last_seen_location": args.last_seen_location,
+        "last_seen_location_transliteration": args.last_seen_location_transliteration,
         "last_seen_date": args.last_seen_date,
         # IntakeRecord uses `distinguishing_marks`; the extraction
         # tool's idiom is `distinguishing_features`. Names diverge

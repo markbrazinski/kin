@@ -86,6 +86,7 @@ class IntakeRecord(BaseModel):
     relationship_to_seeker: str = ""
     age: int | None = None
     last_seen_location: str | None = None
+    last_seen_location_transliteration: str | None = None
     last_seen_date: str | None = None
     distinguishing_marks: str | None = None
 
