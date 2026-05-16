@@ -254,7 +254,7 @@ async def clear_storage(request: Request) -> dict[str, Any]:
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _DEMO_AUDIO: dict[str, Path] = {
-    "yusuf": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_yusuf_take_3_demo.wav",
+    "yusuf": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_Yusuf_take_4_demo.mp3",
     "mariam": _REPO_ROOT / "audio_samples/demo_samples/Arabic VO_Mariam_take 2 demo.wav",
 }
 

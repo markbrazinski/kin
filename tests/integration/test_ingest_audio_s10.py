@@ -31,6 +31,7 @@ from integration.transcription_pipeline import (
     _detect_present_status,
     _ensure_primary_in_roster,
     _map_extraction_to_intake,
+    _promote_first_missing_to_primary,
     _to_rfl_record,
     ingest_audio,
 )
@@ -239,6 +240,82 @@ def test_map_extraction_to_intake_empty_roster_when_family_members_absent() -> N
 #    No new code needed here — the existing test file covers it.
 
 
+# ─── 5a. Searcher age preserved through promotion; record.age = primary's age
+
+
+def test_promote_does_not_clobber_searcher_age_and_map_uses_primary() -> None:
+    """args.age per the tool schema is the SEARCHER's age. The previous
+    _promote_first_missing_to_primary implementation overwrote args.age
+    with the promoted member's age, destroying the searcher's age.
+
+    After the fix:
+      - _promote_first_missing_to_primary leaves args.age intact.
+      - _map_extraction_to_intake sources record.age from the primary
+        member's family_members entry, NOT from args.age.
+      - is_minor uses args.age for the searcher check; here both are
+        adults so is_minor is False.
+    """
+    args = ExtractIntakeFieldsArgs(
+        age=41,                                 # searcher's age
+        searcher_name="Yusuf",
+        family_members=[
+            FamilyMemberArg(
+                name="Mariam",
+                relationship_to_searcher="sister",
+                status="missing",
+                age=32,
+            ),
+        ],
+    )
+
+    promoted = _promote_first_missing_to_primary(args)
+    # Promotion fills full_name from the first missing member.
+    assert promoted.full_name == "Mariam"
+    # Critical: args.age is preserved (NOT overwritten with Mariam's 32).
+    assert promoted.age == 41
+
+    fields = _map_extraction_to_intake(promoted, "en")
+    # record.age is the PRIMARY missing person's age (Mariam = 32),
+    # NOT the searcher's age (41).
+    assert fields["age"] == 32
+    # is_minor: searcher (41) not minor; primary (Mariam, 32) not minor → False.
+    assert fields["is_minor"] is False
+
+
+# ─── 5b. Member-minor flag fires from family member, not searcher ─────
+
+
+def test_member_minor_flag_independent_of_searcher_age() -> None:
+    """is_minor must fire when any missing family member is under 18,
+    regardless of the searcher's age. After the fix, args.age stays as
+    the searcher's age, so the searcher_minor check works correctly:
+    adult searcher with a child in the roster still flags is_minor.
+    """
+    args = ExtractIntakeFieldsArgs(
+        age=41,                                 # adult searcher
+        searcher_name="Yusuf",
+        family_members=[
+            FamilyMemberArg(
+                name="Mohammed",
+                relationship_to_searcher="nephew",
+                status="missing",
+                age=8,                          # minor missing child
+            ),
+        ],
+    )
+
+    promoted = _promote_first_missing_to_primary(args)
+    assert promoted.full_name == "Mohammed"
+    assert promoted.age == 41                   # searcher's age preserved
+
+    fields = _map_extraction_to_intake(promoted, "en")
+    # record.age = primary missing person's age (Mohammed = 8).
+    assert fields["age"] == 8
+    # is_minor True because Mohammed (missing, 8) trips member_minor —
+    # NOT because the searcher is a minor (searcher is 41).
+    assert fields["is_minor"] is True
+
+
 # ─── 6. Extend path preserves roster when turn-2 omits family_members ─
 
 
@@ -291,6 +368,11 @@ async def test_extend_path_preserves_populated_roster_on_empty_turn(
     assert record1.family_roster[2].name == "Pedro"
 
     # Turn 2: adds age only; family_members absent → maps to [] → filter drops it.
+    # Per the tool schema, top-level args.age is the SEARCHER's age — and
+    # record.age (the primary missing person's age) is now sourced from
+    # family_members[primary] in _map_extraction_to_intake. With no
+    # family_members on this turn, primary_age is None and the extend
+    # filter drops it. record2.age stays at its turn-1 value (None).
     turn2_ollama = _OllamaStub(
         english="He is 8 years old.",
         tool_call_response=ToolCallResult(
@@ -309,7 +391,6 @@ async def test_extend_path_preserves_populated_roster_on_empty_turn(
     )
 
     assert record2.id == record1.id
-    assert record2.age == 8
     # Full 3-entry roster survives the extend turn.
     assert len(record2.family_roster) == 3
     assert record2.family_roster[0].name == "Carlos"

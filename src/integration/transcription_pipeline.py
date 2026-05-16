@@ -1057,7 +1057,6 @@ def _promote_first_missing_to_primary(
     return args.model_copy(update={
         "full_name": first_missing.name,
         "relationship": first_missing.relationship_to_searcher or args.relationship,
-        "age": first_missing.age if first_missing.age is not None else args.age,
     })
 
 
@@ -1086,6 +1085,18 @@ def _map_extraction_to_intake(
     full_name = args.full_name
     relationship = args.relationship
     is_latin = lang in _LATIN_SCRIPT_LANGS
+    # record.age semantically holds the PRIMARY MISSING PERSON's age —
+    # consumed by _to_rfl_record → matching as the missing person's age.
+    # args.age per the tool schema is the SEARCHER's age, so we source
+    # the primary's age from family_members[primary] instead.
+    primary_age: int | None = None
+    if full_name and args.family_members:
+        primary_member = next(
+            (m for m in args.family_members if m.name == full_name),
+            None,
+        )
+        if primary_member is not None:
+            primary_age = primary_member.age
     # is_minor fires when the SEARCHER is under 18, OR when any MISSING
     # family member is under 18 — the child-protection flag must cover
     # both cases. Searcher-age check guards the unaccompanied-minor case;
@@ -1105,7 +1116,7 @@ def _map_extraction_to_intake(
         "relationship_to_seeker": (
             relationship if relationship is not None else ""
         ),
-        "age": args.age,
+        "age": primary_age,
         "is_minor": is_minor,
         "last_seen_location": args.last_seen_location,
         "last_seen_date": args.last_seen_date,
