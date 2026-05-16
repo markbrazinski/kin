@@ -30,6 +30,8 @@ from integration.storage_adapter import StorageAdapter
 from integration.transcription_pipeline import (
     _detect_present_status,
     _ensure_primary_in_roster,
+    _extract_member_ages,
+    _fill_transliterations,
     _map_extraction_to_intake,
     _promote_first_missing_to_primary,
     _to_rfl_record,
@@ -634,3 +636,130 @@ def test_detect_present_status_no_marker_leaves_missing() -> None:
 
     assert result.family_members is not None
     assert result.family_members[0].status == "missing"
+
+
+# ─── 14. _ensure_primary_in_roster guards against searcher conflation ─
+
+
+def test_ensure_primary_in_roster_skips_when_full_name_equals_searcher_name() -> None:
+    """Gemma sometimes conflates speaker with primary missing person on
+    crisis audio (e.g. transcript ends with 'I cannot go on, I am Yusuf').
+    Observed on Yusuf Take 4: full_name = searcher_name = 'يوسف العمار'.
+    Without this guard, _ensure_primary_in_roster would copy the searcher
+    into family_members, growing the roster to 4 entries and triggering
+    the _fill_transliterations cascade-shift.
+    """
+    args = ExtractIntakeFieldsArgs(
+        searcher_name="يوسف العمار",
+        full_name="يوسف العمار",  # Gemma wrongly set primary = searcher
+        family_members=[
+            FamilyMemberArg(name="مريم", relationship_to_searcher="أخت", status="missing"),
+            FamilyMemberArg(name="محمد", relationship_to_searcher="ابن أختي", status="missing"),
+            FamilyMemberArg(name="عائشة", relationship_to_searcher="زوجة", status="present"),
+        ],
+    )
+
+    result = _ensure_primary_in_roster(args)
+
+    # Roster must NOT grow — Yusuf the searcher is not a missing person.
+    assert result.family_members is not None
+    assert len(result.family_members) == 3
+    names = [m.name for m in result.family_members]
+    assert "يوسف العمار" not in names
+    assert names == ["مريم", "محمد", "عائشة"]
+
+
+# ─── 15. _extract_member_ages handles Arabic word-numbers ──────────
+
+
+def test_extract_member_ages_word_numbers_yusuf_take4() -> None:
+    """Take 4 transcript states ages as Arabic words: 'مريم عمرها اثنان
+    وثلاثون سنة' (Mariam is 32) and 'محمد عمره ثمان سنوات' (Mohammed is 8).
+    The original digit-only regex missed these. Word-number preprocessing
+    catches them and proximity-assigns to the right members.
+    """
+    transcription = (
+        "أنا يوسف العمار عمري واحد واربعون سنة "
+        "أبحث عن أختي مريم عمرها اثنان وثلاثون سنة "
+        "وابن أختي محمد عمره ثمان سنوات "
+        "زوجتي عائشة معي"
+    )
+    args = ExtractIntakeFieldsArgs(
+        searcher_name="يوسف العمار",
+        age=41,
+        full_name="مريم",
+        family_members=[
+            FamilyMemberArg(name="مريم", relationship_to_searcher="أخت", status="missing"),
+            FamilyMemberArg(name="محمد", relationship_to_searcher="ابن أختي", status="missing"),
+            FamilyMemberArg(name="عائشة", relationship_to_searcher="زوجة", status="present"),
+        ],
+    )
+
+    result = _extract_member_ages(args, transcription)
+
+    assert result.family_members is not None
+    by_name = {m.name: m for m in result.family_members}
+    assert by_name["مريم"].age == 32
+    assert by_name["محمد"].age == 8
+    # Searcher's word-age "واحد واربعون" must NOT leak onto a family member.
+    # Aisha is closest to that age phrase but should stay age=None.
+    assert by_name["عائشة"].age is None
+
+
+def test_extract_member_ages_word_numbers_searcher_age_excluded() -> None:
+    """Searcher's first-person age statement must not be proximity-matched
+    to a family member, regardless of word vs. digit form.
+    """
+    transcription = "أنا أحمد عمري ثلاثة وثلاثون سنة أبحث عن ابني يوسف"
+    args = ExtractIntakeFieldsArgs(
+        searcher_name="أحمد",
+        age=33,
+        full_name="يوسف",
+        family_members=[
+            FamilyMemberArg(name="يوسف", relationship_to_searcher="ابن", status="missing"),
+        ],
+    )
+
+    result = _extract_member_ages(args, transcription)
+    assert result.family_members is not None
+    # Yusuf has no stated age — searcher's 33 must not leak onto him.
+    assert result.family_members[0].age is None
+
+
+# ─── 16. _fill_transliterations anti-cascade (searcher-first) ────
+
+
+def test_fill_transliterations_no_cascade_when_searcher_preset() -> None:
+    """When _fill_searcher_name runs first and sets
+    searcher_name_transliteration, _fill_transliterations must skip the
+    searcher AND mark the searcher's English token as 'used' so family
+    members don't compete for it. Without that bookkeeping, the
+    second-closest English token would be wrongly absorbed by the first
+    family member, cascading through the rest.
+    """
+    transcription = (
+        "أنا يوسف العمار عمري واحد واربعون سنة "
+        "أبحث عن أختي مريم وابن أختي محمد"
+    )
+    english = (
+        "I am Youssef Al Ammar I am forty-one years old "
+        "I am looking for my sister Mariam and my nephew Mohammed"
+    )
+    args = ExtractIntakeFieldsArgs(
+        searcher_name="يوسف العمار",
+        searcher_name_transliteration="Youssef Al Ammar",  # already set
+        full_name="مريم",
+        family_members=[
+            FamilyMemberArg(name="مريم", relationship_to_searcher="أخت", status="missing"),
+            FamilyMemberArg(name="محمد", relationship_to_searcher="ابن أختي", status="missing"),
+        ],
+    )
+
+    result = _fill_transliterations(args, transcription, english)
+
+    assert result.family_members is not None
+    by_name = {m.name: m for m in result.family_members}
+    # Mariam must get "Mariam" — NOT shifted to "Mohammed"
+    assert by_name["مريم"].name_transliteration == "Mariam"
+    # Mohammed must get "Mohammed" — NOT shifted to something else
+    assert by_name["محمد"].name_transliteration == "Mohammed"

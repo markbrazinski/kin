@@ -155,6 +155,42 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "surge, bombing, fleeing in different directions, losing contact "
     "at a crossing), populate separation_circumstance in the source "
     "language. Null if no separation event is described."
+    "\n\n"
+    "CRITICAL RULES:\n"
+    "1. The speaker (searcher) is NEVER a missing person. full_name "
+    "and family_members must contain people OTHER than the searcher. "
+    "If the transcript ends with the speaker restating their own "
+    "name after a distress phrase (e.g. 'ما عد فيني انا يوسف' / "
+    "'I cannot go on, I am Yusuf'), that is still the SEARCHER — "
+    "do not put them in full_name or family_members.\n"
+    "2. Each family member's age MUST go on that member's "
+    "family_members entry whenever stated — in digits OR Arabic "
+    "word-numbers. Arabic word-number map: واحد=1, اثنان=2, "
+    "ثلاثة=3, اربعة=4, خمسة=5, ستة=6, سبعة=7, ثمان/ثمانية=8, "
+    "تسعة=9, عشرة=10, اثنان وثلاثون=32, واحد واربعون=41.\n"
+    "3. distinguishing_features: when the speaker mentions a scar, "
+    "mark, clothing, hair, or other identifying feature about a "
+    "SPECIFIC person, put the description in distinguishing_features "
+    "PREFIXED with the person's name and a colon "
+    "(e.g. 'محمد: ندبة فوق الحاجب الأيسر')."
+    "\n\n"
+    "WORKED EXAMPLE — study the input → output mapping:\n"
+    "Input: \"أنا أحمد عمري 35 سنة أبحث عن ابنتي ليلى عمرها 12 سنة "
+    "وأخي خالد عمره 28 سنة ليلى عندها ضفائر طويلة\"\n"
+    "(I am Ahmed, 35 years old, looking for my daughter Layla, 12, "
+    "and my brother Khalid, 28; Layla has long braids.)\n"
+    "Correct extract_intake_fields call:\n"
+    '{"searcher_name": "أحمد", "age": 35, "full_name": "ليلى", '
+    '"relationship": "ابنة", "searcher_relationship_to_target": "أب", '
+    '"family_members": ['
+    '{"name": "ليلى", "relationship_to_searcher": "ابنة", '
+    '"status": "missing", "age": 12}, '
+    '{"name": "خالد", "relationship_to_searcher": "أخ", '
+    '"status": "missing", "age": 28}'
+    '], "distinguishing_features": "ليلى: ضفائر طويلة"}\n'
+    "Notes: each member's age is ATTACHED to their own entry. The "
+    "searcher (Ahmed) is NOT in family_members. The mark "
+    "'ضفائر طويلة' is prefixed with whose mark it is ('ليلى:')."
 )
 
 _CRISIS_SYSTEM_PROMPT = (
@@ -351,15 +387,19 @@ async def ingest_audio(
     args = _detect_present_status(args, result.transcription)
     args = _extract_member_ages(args, result.transcription)
     args = _promote_first_missing_to_primary(args)
+    # Backfill searcher_name BEFORE _fill_transliterations runs — otherwise
+    # the searcher's transliteration step inside _fill_transliterations
+    # consumes a candidate from the English token pool and offsets all
+    # subsequent family-member matches by one (cascade-shift bug observed
+    # on Take 4). Setting searcher_name + its transliteration first lets
+    # _fill_transliterations skip the searcher and align family members
+    # to their own English tokens directly.
+    if lang not in _LATIN_SCRIPT_LANGS and not args.searcher_name:
+        args = _fill_searcher_name(args, result.transcription, result.english_translation)
     # For non-Latin languages, fill missing name_transliteration using
     # proximity matching against the Whisper English translation.
     if lang not in _LATIN_SCRIPT_LANGS:
         args = _fill_transliterations(args, result.transcription, result.english_translation)
-    # Backfill searcher_name when Gemma missed it (common on crisis audio
-    # where the distress content dominates the tool call). Only fires when
-    # searcher_name is still empty after extraction + transliteration fill.
-    if lang not in _LATIN_SCRIPT_LANGS and not args.searcher_name:
-        args = _fill_searcher_name(args, result.transcription, result.english_translation)
 
     # Stage 4: map extraction → IntakeRecord fields.
     intake_fields = _map_extraction_to_intake(args, lang)
@@ -646,6 +686,16 @@ def _fill_transliterations(
     used: set[int] = set()
     updates: dict[str, str] = {}
 
+    # If the searcher already has a transliteration (e.g. _fill_searcher_name
+    # ran first and set it), mark that candidate as used so family members
+    # don't compete for it. Prevents the cascade-shift where each member
+    # absorbs the next-closest English token.
+    if args.searcher_name_transliteration:
+        for idx, (_pos, token) in enumerate(en_candidates):
+            if token == args.searcher_name_transliteration:
+                used.add(idx)
+                break
+
     # Searcher name first — it appears earliest in most transcripts.
     if args.searcher_name and not args.searcher_name_transliteration:
         t = _proximity_transliterate(
@@ -832,6 +882,13 @@ def _ensure_primary_in_roster(
     if args.full_name is None:
         return args
 
+    # Guard against Gemma conflating the searcher with the primary missing
+    # person (observed on Take 4: distress-then-restate pattern caused
+    # Gemma to set full_name == searcher_name). The searcher cannot be
+    # missing — refuse to copy them into the roster.
+    if args.searcher_name and args.full_name == args.searcher_name:
+        return args
+
     existing_names: set[str] = {m.name for m in (args.family_members or [])}
     if args.full_name in existing_names:
         return args
@@ -969,6 +1026,36 @@ _SEARCHER_AGE_RE = re.compile(
 )
 
 
+# Arabic ordinal-word → int mapping. Used by _extract_member_ages when
+# Whisper transcribes a spoken age in words rather than digits ("ثمان
+# سنوات" instead of "8 سنوات"). Keyed by the longest form first so the
+# regex below matches "اثنان وثلاثون" before "اثنان".
+_ARABIC_WORD_NUMS: dict[str, int] = {
+    # Compound 20-99
+    "واحد وعشرون": 21, "اثنان وعشرون": 22, "ثلاثة وعشرون": 23,
+    "اربعة وعشرون": 24, "خمسة وعشرون": 25, "ستة وعشرون": 26,
+    "سبعة وعشرون": 27, "ثمانية وعشرون": 28, "تسعة وعشرون": 29,
+    "واحد وثلاثون": 31, "اثنان وثلاثون": 32, "ثلاثة وثلاثون": 33,
+    "اربعة وثلاثون": 34, "خمسة وثلاثون": 35, "ستة وثلاثون": 36,
+    "سبعة وثلاثون": 37, "ثمانية وثلاثون": 38, "تسعة وثلاثون": 39,
+    "واحد واربعون": 41, "اثنان واربعون": 42, "ثلاثة واربعون": 43,
+    "اربعة واربعون": 44, "خمسة واربعون": 45,
+    # Tens
+    "عشرون": 20, "ثلاثون": 30, "اربعون": 40, "خمسون": 50, "ستون": 60,
+    # Ones (commonly used for child ages)
+    "واحد": 1, "اثنان": 2, "ثلاثة": 3, "اربعة": 4, "خمسة": 5,
+    "ستة": 6, "سبعة": 7, "ثمانية": 8, "ثمان": 8, "تسعة": 9, "عشرة": 10,
+}
+
+# Regex for word-form ages following "عمره/عمرها" or preceding "سنة/سنوات".
+# Group 1 captures the word-form age phrase; longest alternatives first.
+_WORD_AGE_RE = re.compile(
+    r'(?:عمره?ا?\s+)?(' +
+    '|'.join(sorted(_ARABIC_WORD_NUMS.keys(), key=len, reverse=True)) +
+    r')\s*سن[وة]'
+)
+
+
 def _extract_member_ages(
     args: ExtractIntakeFieldsArgs,
     transcription: str,
@@ -986,11 +1073,17 @@ def _extract_member_ages(
     if not args.family_members:
         return args
 
-    # Find all age mentions: "عمره N" or "N سنة/سنوات"
-    age_mentions = list(re.finditer(
-        r'(?:عمره?\s+)?(\d+)\s*سن[وة]', transcription
-    ))
-    if not age_mentions:
+    # Collect all age mentions as (start_pos, age_value) tuples. Two
+    # sources: digit-form ("8 سنوات") and word-form ("ثمان سنوات").
+    age_hits: list[tuple[int, int]] = []
+    # Digit form: "عمره N" or "N سنة/سنوات"
+    for m in re.finditer(r'(?:عمره?\s+)?(\d+)\s*سن[وة]', transcription):
+        age_hits.append((m.start(), int(m.group(1))))
+    # Word form: Whisper transcribes some speakers in Arabic words.
+    for m in _WORD_AGE_RE.finditer(transcription):
+        age_hits.append((m.start(), _ARABIC_WORD_NUMS[m.group(1)]))
+
+    if not age_hits:
         return args
 
     # Collect character offsets of the DIGIT GROUP within each searcher
@@ -1001,27 +1094,40 @@ def _extract_member_ages(
     searcher_age_offsets: set[int] = {
         m.start(1) for m in _SEARCHER_AGE_RE.finditer(transcription)
     }
+    # Searcher word-age offsets (e.g. "عمري واحد واربعون سنة").
+    for m in re.finditer(
+        r'(?:عمري|عندي|أنا)\s+(' +
+        '|'.join(sorted(_ARABIC_WORD_NUMS.keys(), key=len, reverse=True)) +
+        r')\s*سن[وة]',
+        transcription,
+    ):
+        searcher_age_offsets.add(m.start(1))
 
     updated = list(args.family_members)
     changed = False
 
-    for age_match in age_mentions:
-        if age_match.start() in searcher_age_offsets:
+    for age_pos, age_val in age_hits:
+        if age_pos in searcher_age_offsets:
             continue  # searcher's own age — skip
-        age_val = int(age_match.group(1))
-        age_pos = age_match.start()
 
-        # Find the closest member (by name position) that still needs an age.
+        # Find the closest member by name position across ALL members,
+        # whether or not they already have an age. If the closest member
+        # already has an age, this age is bound to them — don't fall
+        # through to a more distant member (that would leak ages to
+        # bystanders, e.g. assign Mohammed's '8' to Aisha just because
+        # Aisha is the next-closest member without an age).
         best_idx: int | None = None
         best_dist = float('inf')
         for i, member in enumerate(updated):
-            if member.age is not None:
-                continue
             for name_match in re.finditer(re.escape(member.name), transcription):
                 dist = abs(name_match.start() - age_pos)
                 if dist < best_dist:
                     best_dist = dist
                     best_idx = i
+
+        # Skip if the closest member already has an age (consumed).
+        if best_idx is not None and updated[best_idx].age is not None:
+            continue
 
         if best_idx is not None and best_dist < 40:
             updated[best_idx] = updated[best_idx].model_copy(
