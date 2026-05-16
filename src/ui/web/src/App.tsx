@@ -29,7 +29,7 @@ import { QueueView, useQueueRecords } from './components/QueueView';
 import { RecordReadonly } from './components/RecordReadonly';
 import { PresenterHUD } from './components/PresenterHUD';
 import { usePresentationMode } from './hooks/usePresentationMode';
-import type { IntakeRecord } from './lib/intakeRecord';
+import { intakeRecordToRecordData, type IntakeRecord } from './lib/intakeRecord';
 import {
   INITIAL_MATCH_CANDIDATES,
   applyMatchProposed,
@@ -896,6 +896,11 @@ function App() {
   const [view, setView]                       = useState<View>("single");
   const [matchPhase, setMatchPhase]           = useState<MatchPhase>("split");
   const [networkMatchResult, setNetworkMatchResult] = useState<NetworkMatchResult | null>(null);
+  // Counterparty record-id of the currently-displayed match. Set when
+  // we pick the best match_proposed event in the SSE handler. Drives
+  // the Side A lookup in queueRecords so we render the real other
+  // record's data, not whatever prevRecord happens to hold.
+  const [matchedCounterpartyId, setMatchedCounterpartyId] = useState<string | null>(null);
   const [demoStructlogEvents, setDemoStructlogEvents] = useState<StructlogEnvelope[]>([]);
   // Stores the record from the previous completed intake so the match graph
   // can show real node data (Side A) when two live intakes produce a match.
@@ -1025,21 +1030,51 @@ function App() {
         recordIds,
         env.payload.at,
       );
-      // S12: extract network_match from audit event details.
-      // Only present on match_proposed events emitted after B2-S12
-      // deployed; pre-S12 events have details={} so this is a no-op.
-      const networkRaw = env.payload.details?.network_match;
-      if (
-        networkRaw !== null &&
-        networkRaw !== undefined &&
-        typeof networkRaw === 'object' &&
-        (networkRaw as NetworkMatchResult).matched === true
-      ) {
-        setNetworkMatchResult(networkRaw as NetworkMatchResult);
-      }
     }
     if (next !== null) setMatchCandidates(next);
-  }, [streamState.auditEvents, matchCandidates]);
+
+    // Select-best pass: among ALL match_proposed events involving the
+    // currently-active intake, pick the link with the most node_matches
+    // and surface that as networkMatchResult. This fixes the
+    // "last-event-wins" bug where multiple fan-out matches (e.g. Mariam
+    // matched against Yusuf AND against a prior Mariam) caused the
+    // weakest link (1-match Mariam↔Mariam) to overwrite the strongest
+    // (3-match Yusuf↔Mariam) just because it fired last.
+    const currentIntakeId = streamState.intakeId ?? record.recordId;
+    if (!currentIntakeId) return;
+    let bestMatch: NetworkMatchResult | null = null;
+    let bestCounterparty: string | null = null;
+    let bestAt = '';
+    for (const env of streamState.auditEvents) {
+      if (env.payload.event_type !== 'match_proposed') continue;
+      const recordIds = env.payload.record_ids;
+      if (!recordIds.includes(currentIntakeId)) continue;
+      const networkRaw = env.payload.details?.network_match;
+      if (
+        networkRaw === null ||
+        networkRaw === undefined ||
+        typeof networkRaw !== 'object'
+      ) continue;
+      const nm = networkRaw as NetworkMatchResult;
+      if (nm.matched !== true) continue;
+      const count = nm.node_matches.length;
+      const at = String(env.payload.at ?? '');
+      const better =
+        bestMatch === null ||
+        count > bestMatch.node_matches.length ||
+        (count === bestMatch.node_matches.length && at > bestAt);
+      if (better) {
+        bestMatch = nm;
+        bestCounterparty =
+          recordIds.find(id => id !== currentIntakeId) ?? null;
+        bestAt = at;
+      }
+    }
+    if (bestMatch) {
+      setNetworkMatchResult(bestMatch);
+      setMatchedCounterpartyId(bestCounterparty);
+    }
+  }, [streamState.auditEvents, streamState.intakeId, record.recordId, matchCandidates]);
 
   // Bridge SSE structlog events into the trace calls list.
   useEffect(() => {
@@ -1284,13 +1319,22 @@ function App() {
         relationship: mp.relationship,
         age: mp.age,
       })),
-      rosterMembers: r.familyRoster.filter(m => m.status === 'WITH_SEARCHER').map(fm => ({
-        name: fm.name,
-        nameLatin: fm.nameLatin,
-        relationship: fm.relationship,
-        status: 'present' as const,
-        age: fm.age,
-      })),
+      // Mirror the backend's matching_roster filter
+      // (transcription_pipeline.py:1515-1518 filters family_roster by
+      // full_name_source_script). The graph builder uses roster_index
+      // from the SSE node_matches; those indices reference this
+      // filtered list, including BOTH missing and present members.
+      // r.name is the IntakeRecord.full_name_source_script as mapped
+      // by the eventReducer FIELD_MAP / intakeRecordToRecordData.
+      rosterMembers: r.familyRoster
+        .filter(m => !r.name || m.name !== r.name)
+        .map(fm => ({
+          name: fm.name,
+          nameLatin: fm.nameLatin,
+          relationship: fm.relationship,
+          status: fm.status === 'WITH_SEARCHER' ? 'present' as const : 'missing' as const,
+          age: fm.age,
+        })),
     };
   };
 
@@ -1308,6 +1352,7 @@ function App() {
     setCalls([]);
     setJustPopulated(null);
     setNetworkMatchResult(null);
+    setMatchedCounterpartyId(null);
     setDemoStructlogEvents([]);
     pendingPostCrisisRef.current = null;
     // Preserve prevRecord across reset when it holds a real completed
@@ -1861,25 +1906,42 @@ function App() {
               </>
             )}
 
-            {view === "match" && (
-              networkMatchResult && networkMatchResult.node_matches.length >= 1
+            {view === "match" && (() => {
+              // Counterparty record: prefer the one identified by the
+              // select-best match link (matchedCounterpartyId). Look it
+              // up in queueRecords and convert. If absent (synthetic
+              // demo path, or queue not yet fetched), fall back to
+              // prevRecord. Either way recordA gets real data; never
+              // the DEFAULT_RECORD_A Halabi fixture on the live path.
+              const counterpartyStored = matchedCounterpartyId
+                ? queueRecords.find(r => r.id === matchedCounterpartyId)
+                : null;
+              const counterpartyRecord = counterpartyStored
+                ? intakeRecordToRecordData(counterpartyStored)
+                : prevRecord;
+              const recordACard = counterpartyRecord
+                ? toNetworkCard(counterpartyRecord, 'warm')
+                : undefined;
+              const intakeIdA =
+                counterpartyStored?.id ?? prevRecord?.recordId;
+              return networkMatchResult && networkMatchResult.node_matches.length >= 1
                 ? <NetworkMatch
                     phase={matchPhase}
                     onBack={() => setView("single")}
                     onNewIntake={() => { onReset(); setView("single"); }}
                     workerLanguage={workerLanguage}
                     networkResult={networkMatchResult}
-                    recordA={prevRecord ? toNetworkCard(prevRecord, 'warm') : undefined}
+                    recordA={recordACard}
                     recordB={toNetworkCard(record, 'cool')}
-                    intakeIdA={prevRecord?.recordId}
+                    intakeIdA={intakeIdA}
                     intakeIdB={streamState.intakeId ?? record.recordId}
                   />
                 : <TransliterationMatch
                     phase={matchPhase}
                     onBack={() => setView("single")}
                     workerLanguage={workerLanguage}
-                  />
-            )}
+                  />;
+            })()}
 
             {view === "queue" && !selectedQueueRecordId && (
               <QueueView

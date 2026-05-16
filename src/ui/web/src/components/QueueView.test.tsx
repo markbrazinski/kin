@@ -17,12 +17,18 @@ const COMPLETE_RECORD: IntakeRecord = {
   relationship_to_seeker: 'Father',
   age: 7,
   last_seen_location: 'la frontera',
+  last_seen_location_transliteration: null,
   last_seen_date: '2026-05-01',
   distinguishing_marks: null,
   is_minor: false,
   is_crisis: false,
   referral_issued: false,
   referral_organization: null,
+  family_roster: [],
+  searcher_name: '',
+  searcher_name_transliteration: '',
+  searcher_relationship_to_target: '',
+  separation_circumstance: null,
 };
 
 const PARTIAL_RECORD: IntakeRecord = {
