@@ -44,6 +44,7 @@ class FamilyMemberArg(BaseModel):
     status: str = "missing"
     age: int | None = None
     last_seen_location: str | None = None
+    distinguishing_marks: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -222,6 +223,18 @@ EXTRACT_INTAKE_FIELDS_TOOL: dict[str, Any] = {
                                 "type": "string",
                                 "description": (
                                     "Where last seen, in source language."
+                                ),
+                            },
+                            "distinguishing_marks": {
+                                "type": ["string", "null"],
+                                "description": (
+                                    "Any scar, mark, birthmark, tattoo, "
+                                    "clothing description, hair detail, or "
+                                    "other identifying physical feature the "
+                                    "speaker mentions specifically about THIS "
+                                    "family member. Preserve the speaker's "
+                                    "source language. Null if not stated for "
+                                    "this person."
                                 ),
                             },
                         },

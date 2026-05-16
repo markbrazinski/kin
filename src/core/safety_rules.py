@@ -106,6 +106,23 @@ _CRISIS_KEYWORDS: dict[SupportedLang, frozenset[str]] = {
             "خطر وشيك",
             "ما عاد فيني",
             "ما عاد فيني أكمل",
+            # Whisper-shape variants for the "I can't go on / I can't
+            # continue" phrase. Different speakers produce different
+            # orthographies; Whisper transcriptions vary too — sometimes
+            # drops the ع, concatenates ما+عد, drops the ي from فيني,
+            # or swaps فيني ↔ فيه ↔ فين. All map to the same crisis
+            # signal: "I cannot continue."
+            "ما عد فيني",
+            "ما عد فين",
+            "ما عد فيه",
+            "ماعد فيني",
+            "ماعد فين",
+            "ماعد فيه",
+            "ما عاد فيه",
+            "ما عاد فيه يكمل",
+            "ما عد فيه نكمل",
+            "ما عد فيني يكمل",
+            "ما عد فين يكمل",
         }
     ),
     "fa": frozenset(

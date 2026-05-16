@@ -94,16 +94,21 @@ export function mapAuditEventToRecord(
   const arrayKey = ARRAY_FIELD_MAP[fieldName];
   if (arrayKey) {
     if (!Array.isArray(rawValue)) return record;
-    const members: FamilyMember[] = rawValue.map((m: Record<string, unknown>) => ({
-      name: (m.name as string) ?? '',
-      nameLatin: (m.name_transliteration as string | null) ?? undefined,
-      age: (m.age as number | null) ?? undefined,
-      relationship: (m.relationship_to_searcher as string) ?? '',
-      status: m.status === 'present' ? 'WITH_SEARCHER'
-            : m.status === 'missing' ? 'MISSING'
-            : 'UNKNOWN',
-      lastSeen: (m.last_seen_location as string | null) ?? undefined,
-    }));
+    const members: FamilyMember[] = rawValue.map((m: Record<string, unknown>) => {
+      const marksRaw = m.distinguishing_marks as string | null | undefined;
+      const marks = marksRaw ? [marksRaw] : undefined;
+      return {
+        name: (m.name as string) ?? '',
+        nameLatin: (m.name_transliteration as string | null) ?? undefined,
+        age: (m.age as number | null) ?? undefined,
+        relationship: (m.relationship_to_searcher as string) ?? '',
+        status: m.status === 'present' ? 'WITH_SEARCHER'
+              : m.status === 'missing' ? 'MISSING'
+              : 'UNKNOWN',
+        lastSeen: (m.last_seen_location as string | null) ?? undefined,
+        marks,
+      };
+    });
     return { ...record, [arrayKey]: members };
   }
 

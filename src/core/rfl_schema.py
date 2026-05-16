@@ -152,6 +152,9 @@ class FamilyMember(BaseModel):
 
     age: int | None = None
     last_seen_location: str | None = None
+    distinguishing_marks: str | None = None
+    """Free-text identifying feature for this member (scar, mark,
+    clothing, hair, tattoo). Source language preserved."""
 
 
 class RFLRecord(BaseModel):

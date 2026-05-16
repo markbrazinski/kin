@@ -168,29 +168,35 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "word-numbers. Arabic word-number map: واحد=1, اثنان=2, "
     "ثلاثة=3, اربعة=4, خمسة=5, ستة=6, سبعة=7, ثمان/ثمانية=8, "
     "تسعة=9, عشرة=10, اثنان وثلاثون=32, واحد واربعون=41.\n"
-    "3. distinguishing_features: when the speaker mentions a scar, "
+    "3. distinguishing_marks: when the speaker mentions a scar, "
     "mark, clothing, hair, or other identifying feature about a "
-    "SPECIFIC person, put the description in distinguishing_features "
-    "PREFIXED with the person's name and a colon "
-    "(e.g. 'محمد: ندبة فوق الحاجب الأيسر')."
+    "SPECIFIC family member, put that description on THAT MEMBER's "
+    "family_members entry as their distinguishing_marks field. "
+    "Do NOT put member-specific marks in the top-level "
+    "distinguishing_features field — only use the top-level field "
+    "for marks describing the primary missing person (full_name)."
     "\n\n"
     "WORKED EXAMPLE — study the input → output mapping:\n"
     "Input: \"أنا أحمد عمري 35 سنة أبحث عن ابنتي ليلى عمرها 12 سنة "
-    "وأخي خالد عمره 28 سنة ليلى عندها ضفائر طويلة\"\n"
+    "وأخي خالد عمره 28 سنة ليلى عندها ضفائر طويلة وخالد عنده ندبة على ذراعه\"\n"
     "(I am Ahmed, 35 years old, looking for my daughter Layla, 12, "
-    "and my brother Khalid, 28; Layla has long braids.)\n"
+    "and my brother Khalid, 28; Layla has long braids and Khalid has "
+    "a scar on his arm.)\n"
     "Correct extract_intake_fields call:\n"
     '{"searcher_name": "أحمد", "age": 35, "full_name": "ليلى", '
     '"relationship": "ابنة", "searcher_relationship_to_target": "أب", '
     '"family_members": ['
     '{"name": "ليلى", "relationship_to_searcher": "ابنة", '
-    '"status": "missing", "age": 12}, '
+    '"status": "missing", "age": 12, '
+    '"distinguishing_marks": "ضفائر طويلة"}, '
     '{"name": "خالد", "relationship_to_searcher": "أخ", '
-    '"status": "missing", "age": 28}'
-    '], "distinguishing_features": "ليلى: ضفائر طويلة"}\n'
-    "Notes: each member's age is ATTACHED to their own entry. The "
-    "searcher (Ahmed) is NOT in family_members. The mark "
-    "'ضفائر طويلة' is prefixed with whose mark it is ('ليلى:')."
+    '"status": "missing", "age": 28, '
+    '"distinguishing_marks": "ندبة على ذراعه"}'
+    ']}\n'
+    "Notes: each member's age AND distinguishing_marks are attached "
+    "to their own entry. The searcher (Ahmed) is NOT in "
+    "family_members. The top-level distinguishing_features stays "
+    "null because the marks belong to specific family members."
 )
 
 _CRISIS_SYSTEM_PROMPT = (
@@ -858,6 +864,7 @@ def _map_family_members(
                 status=status,  # type: ignore[arg-type]
                 age=m.age,
                 last_seen_location=m.last_seen_location,
+                distinguishing_marks=m.distinguishing_marks,
             )
         )
     return result
